@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: fuelLogs
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required) - UID of the owner
+    //   - timestamp: string (required) - ISO 8601 date string
+    //   - kmsSinceLastRefill: number (required) - Trip kms
+    //   - totalKms: number (required) - Odometer kms
+    //   - ridingMode: string (optional) - Eco, Rain, Road, Dynamic, Enduro, Enduro Pro
+    //   - calculatedConsumption: number (optional) - km/L from bike
+    //   - actualQuantityFilled: number (required) - Liters filled
+    //   - fuelType: string (required) - Standard, Premium
+    //   - photoUrl: string (optional) - URL
+    //   - actualConsumption: number (optional) - km/L actual
+    //   - discrepancy: number (optional) - Diff (km/L)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "turbocharged9000@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidVehicle(data) {
+      return data.userId is string &&
+             data.nickname is string &&
+             data.nickname.size() > 0 && data.nickname.size() < 50 &&
+             data.type in ['2 Wheeler', '4 Wheeler'] &&
+             data.registration is string &&
+             data.createdAt is string;
+    }
+
+    function isValidFuelLog(data) {
+      return data.userId is string &&
+             data.vehicleId is string &&
+             data.timestamp is string &&
+             data.kmsSinceLastRefill is number &&
+             data.totalKms is number &&
+             data.actualQuantityFilled is number &&
+             data.fuelType in ['Standard', 'Premium'] &&
+             (!('ridingMode' in data) || data.ridingMode is string) &&
+             (!('rideType' in data) || data.rideType in ['City', 'Highway', 'Mixed']) &&
+             (!('calculatedConsumption' in data) || data.calculatedConsumption is number) &&
+             (!('actualConsumption' in data) || data.actualConsumption is number) &&
+             (!('discrepancy' in data) || data.discrepancy is number) &&
+             (!('totalCost' in data) || data.totalCost is number) &&
+             (!('pricePerLiter' in data) || data.pricePerLiter is number) &&
+             (!('tripPhoto' in data) || data.tripPhoto is string) &&
+             (!('receipts' in data) || data.receipts is list);
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && request.resource.data.role == 'user';
+      allow update: if isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role);
+    }
+
+    match /vehicles/{vehicleId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid && isValidVehicle(request.resource.data);
+      allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && isValidVehicle(request.resource.data);
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /fuelLogs/{logId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid && isValidFuelLog(request.resource.data);
+      allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && isValidFuelLog(request.resource.data);
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+  }
+}

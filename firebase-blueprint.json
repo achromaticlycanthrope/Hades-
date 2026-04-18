@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "vehicle": {
+      "title": "Vehicle",
+      "description": "A vehicle owned by the user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who owns the vehicle." },
+        "nickname": { "type": "string", "description": "A friendly name for the vehicle." },
+        "type": { "type": "string", "enum": ["2 Wheeler", "4 Wheeler"], "description": "The category of the vehicle." },
+        "registration": { "type": "string", "description": "The registration number of the vehicle." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the vehicle was added." }
+      },
+      "required": ["userId", "nickname", "type", "registration", "createdAt"]
+    },
+    "fuelLog": {
+      "title": "Fuel Log",
+      "description": "A record of a vehicle fuel fill-up.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who created the log." },
+        "vehicleId": { "type": "string", "description": "The ID of the vehicle this log belongs to." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the fuel was purchased." },
+        "kmsSinceLastRefill": { "type": "number", "description": "Kilometers traveled since the last refill." },
+        "totalKms": { "type": "number", "description": "Total odometer reading at the time of refill." },
+        "ridingMode": { "type": "string", "description": "The riding mode or driving style used during this period." },
+        "rideType": { "type": "string", "enum": ["City", "Highway", "Mixed"], "description": "The type of ride (City, Highway, or Mixed)." },
+        "calculatedConsumption": { "type": "number", "description": "Fuel consumption as calculated by the trip computer (km/L or L/100km)." },
+        "actualQuantityFilled": { "type": "number", "description": "Actual liters of fuel filled." },
+        "fuelType": { "type": "string", "enum": ["Standard", "Premium"], "description": "Type of fuel filled." },
+        "photoUrl": { "type": "string", "description": "URL of the trip computer photo (if stored)." },
+        "actualConsumption": { "type": "number", "description": "Actual fuel consumption calculated from liters and kms (km/L)." },
+        "discrepancy": { "type": "number", "description": "Difference between calculated and actual consumption (km/L)." },
+        "totalCost": { "type": "number", "description": "Total cost of the fuel refill." },
+        "pricePerLiter": { "type": "number", "description": "Price per liter of fuel." },
+        "tripPhoto": { "type": "string", "description": "URL of the trip computer photo stored in Firebase Storage." },
+        "receipts": { "type": "array", "items": { "type": "string" }, "description": "List of URLs for fuel receipts stored in Firebase Storage." }
+      },
+      "required": ["userId", "vehicleId", "timestamp", "kmsSinceLastRefill", "totalKms", "actualQuantityFilled", "fuelType", "totalCost", "pricePerLiter"]
+    }
+  },
+  "firestore": {
+    "/vehicles/{vehicleId}": {
+      "schema": "vehicle",
+      "description": "Collection of user vehicles."
+    },
+    "/fuelLogs/{logId}": {
+      "schema": "fuelLog",
+      "description": "Collection of fuel fill-up logs."
+    }
+  }
+}
