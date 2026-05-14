@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+vite.config.ts.timestamp-*
+*.mjs

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   GoogleAuthProvider, 
   signInWithPopup, 
@@ -170,15 +170,43 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 
 const RIDING_MODES = ['Eco', 'Rain', 'Road', 'Dynamic', 'Enduro', 'Enduro Pro', 'Normal', 'Sport', 'Comfort', 'Off-Road'];
 
+const safeDate = (dateVal: any) => {
+  if (!dateVal) return new Date();
+  try {
+    const d = dateVal.toDate ? dateVal.toDate() : new Date(dateVal);
+    return isNaN(d.getTime()) ? new Date() : d;
+  } catch (e) {
+    return new Date();
+  }
+};
+
 export default function App() {
+  return <AppContent />;
+}
+
+function AppContent() {
+  console.log("AppContent rendering...");
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [logs, setLogs] = useState<FuelLog[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [dashboardLogs, setDashboardLogs] = useState<FuelLog[]>([]);
   const [historyLogs, setHistoryLogs] = useState<FuelLog[]>([]);
   const [orphanedLogsCount, setOrphanedLogsCount] = useState(0);
+  const [hasError, setHasError] = useState<boolean>(false);
+  const [errorInfo, setErrorInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleError = (error: ErrorEvent) => {
+      console.error("Global captured error:", error);
+      setHasError(true);
+      setErrorInfo(error.message);
+    };
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -262,9 +290,113 @@ export default function App() {
     pricePerLiter: '',
   });
 
+  const chartData = useMemo(() => {
+    try {
+      return [...dashboardLogs].reverse().map(log => ({
+        date: format(safeDate(log.timestamp), 'MMM dd'),
+        actual: parseFloat((log.actualConsumption || 0).toFixed(2)),
+        calculated: parseFloat((log.calculatedConsumption || 0).toFixed(2)),
+        mode: log.ridingMode || 'N/A',
+        fuel: log.fuelType || 'Standard',
+        discrepancy: Math.abs(log.discrepancy || 0)
+      }));
+    } catch (e) {
+      console.error("Error calculating chart data:", e);
+      return [];
+    }
+  }, [dashboardLogs]);
+
+  const stats = useMemo(() => {
+    try {
+      const avgCons = dashboardLogs.length > 0 
+        ? (dashboardLogs.reduce((acc, log) => acc + (log.actualConsumption || 0), 0) / dashboardLogs.length)
+        : 0;
+      
+      const totLit = dashboardLogs.reduce((acc, log) => acc + (log.actualQuantityFilled || 0), 0);
+      const totKms = dashboardLogs.reduce((acc, log) => acc + (log.kmsSinceLastRefill || 0), 0);
+      const maxDisc = dashboardLogs.length > 0
+        ? Math.max(...dashboardLogs.map(l => Math.abs(l.discrepancy || 0)))
+        : 0;
+      const totCost = dashboardLogs.reduce((acc, log) => acc + (log.totalCost || 0), 0);
+      
+      const ecoLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() === 'eco');
+      const ecoEff = ecoLogs.length > 0 
+        ? (ecoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / ecoLogs.length)
+        : 0;
+        
+      const nonEcoLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() !== 'eco' && l.ridingMode);
+      const ecoSav = (ecoLogs.length > 0 && nonEcoLogs.length > 0)
+        ? (ecoEff - (nonEcoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / nonEcoLogs.length))
+        : 0;
+
+      return {
+        avgConsumption: avgCons.toFixed(2),
+        totalLiters: totLit.toFixed(1),
+        totalKms: totKms.toFixed(0),
+        maxDiscrepancy: maxDisc.toFixed(2),
+        totalCost: totCost.toFixed(2),
+        avgCostPerKm: totKms > 0 ? (totCost / totKms).toFixed(2) : '0.00',
+        ecoEfficiency: ecoEff.toFixed(2),
+        ecoSavings: ecoSav.toFixed(2)
+      };
+    } catch (e) {
+      console.error("Error calculating stats:", e);
+      return {
+        avgConsumption: '0.00',
+        totalLiters: '0.0',
+        totalKms: '0',
+        maxDiscrepancy: '0.00',
+        totalCost: '0.00',
+        avgCostPerKm: '0.00',
+        ecoEfficiency: '0.00',
+        ecoSavings: '0.00'
+      };
+    }
+  }, [dashboardLogs]);
+
+  const modeEfficiencyData = useMemo(() => {
+    try {
+      return RIDING_MODES.map(mode => {
+        const modeLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() === mode.toLowerCase());
+        const avg = modeLogs.length > 0 ? modeLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / modeLogs.length : 0;
+        return { mode, actual: parseFloat(avg.toFixed(2)) };
+      }).filter(d => d.actual > 0);
+    } catch (e) {
+      return [];
+    }
+  }, [dashboardLogs]);
+
+  const fuelEfficiencyData = useMemo(() => {
+    try {
+      return ['Standard', 'Premium'].map(fuel => {
+        const fuelLogs = dashboardLogs.filter(l => l.fuelType?.toLowerCase() === fuel.toLowerCase());
+        const avg = fuelLogs.length > 0 ? fuelLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / fuelLogs.length : 0;
+        return { fuel, actual: parseFloat(avg.toFixed(2)) };
+      }).filter(d => d.actual > 0);
+    } catch (e) {
+      return [];
+    }
+  }, [dashboardLogs]);
+
+  const rideTypeEfficiencyData = useMemo(() => {
+    try {
+      return ['City', 'Highway', 'Mixed'].map(type => {
+        const typeLogs = dashboardLogs.filter(l => (l.rideType || 'Mixed').toLowerCase() === type.toLowerCase());
+        const avg = typeLogs.length > 0 ? typeLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / typeLogs.length : 0;
+        return { type, actual: parseFloat(avg.toFixed(2)) };
+      }).filter(d => d.actual > 0);
+    } catch (e) {
+      return [];
+    }
+  }, [dashboardLogs]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log("Auth state changed:", user?.email);
       setUser(user);
+      setLoading(false);
+    }, (error) => {
+      console.error("Auth error:", error);
       setLoading(false);
     });
     return unsubscribe;
@@ -353,11 +485,11 @@ export default function App() {
     // Dashboard filtering (Date Range pickers)
     const dLogs = logs.filter(log => {
       if (!log.timestamp) return false;
-      const logDate = new Date(log.timestamp);
+      const logDate = safeDate(log.timestamp);
       if (isNaN(logDate.getTime())) return false;
       
-      const start = new Date(dateRange.start);
-      const end = new Date(dateRange.end);
+      const start = safeDate(dateRange.start);
+      const end = safeDate(dateRange.end);
       
       if (isNaN(start.getTime()) || isNaN(end.getTime())) return true;
 
@@ -379,11 +511,11 @@ export default function App() {
     if (filterDateRange !== 'all') {
       const now = new Date();
       if (filterDateRange === '7d') {
-        hLogs = hLogs.filter(log => log.timestamp && new Date(log.timestamp) >= subDays(now, 7));
+        hLogs = hLogs.filter(log => log.timestamp && safeDate(log.timestamp) >= subDays(now, 7));
       } else if (filterDateRange === '30d') {
-        hLogs = hLogs.filter(log => log.timestamp && new Date(log.timestamp) >= subDays(now, 30));
+        hLogs = hLogs.filter(log => log.timestamp && safeDate(log.timestamp) >= subDays(now, 30));
       } else if (filterDateRange === '90d') {
-        hLogs = hLogs.filter(log => log.timestamp && new Date(log.timestamp) >= subDays(now, 90));
+        hLogs = hLogs.filter(log => log.timestamp && safeDate(log.timestamp) >= subDays(now, 90));
       }
     }
     setHistoryLogs(hLogs);
@@ -411,16 +543,16 @@ export default function App() {
     ];
 
     const rows = historyLogs.map(log => [
-      format(new Date(log.timestamp), "dd/MM/yyyy HH:mm"),
-      log.kmsSinceLastRefill,
-      log.totalKms,
-      log.ridingMode,
+      format(safeDate(log.timestamp), "dd/MM/yyyy HH:mm"),
+      log.kmsSinceLastRefill || 0,
+      log.totalKms || 0,
+      log.ridingMode || 'N/A',
       log.rideType || 'Mixed',
-      log.fuelType,
-      log.actualQuantityFilled,
-      log.actualConsumption.toFixed(2),
-      log.calculatedConsumption.toFixed(2),
-      log.discrepancy.toFixed(2),
+      log.fuelType || 'Standard',
+      log.actualQuantityFilled || 0,
+      (log.actualConsumption || 0).toFixed(2),
+      (log.calculatedConsumption || 0).toFixed(2),
+      (log.discrepancy || 0).toFixed(2),
       log.totalCost || 0,
       log.pricePerLiter || 0
     ]);
@@ -720,6 +852,17 @@ export default function App() {
     }
   };
 
+  if (hasError) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#E4E3E0] p-6 text-center">
+        <AlertTriangle className="w-12 h-12 text-red-600 mb-4" />
+        <h1 className="text-xl font-bold text-[#141414] mb-2">Something went wrong</h1>
+        <p className="text-sm text-[#141414] opacity-70 font-mono mb-4">{errorInfo}</p>
+        <Button onClick={() => window.location.reload()}>Reload Page</Button>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#E4E3E0]">
@@ -741,9 +884,14 @@ export default function App() {
             <h1 className="text-4xl font-bold tracking-tighter text-[#141414] font-sans">FUEL TRACKER</h1>
             <p className="text-muted-foreground italic font-serif">Multi-vehicle performance monitoring</p>
           </div>
-          <Button onClick={handleLogin} className="w-full bg-[#141414] text-[#E4E3E0] hover:bg-[#2a2a2a] h-12 text-lg font-mono">
-            SIGN IN WITH GOOGLE
-          </Button>
+          <div className="pt-4">
+            <Button onClick={handleLogin} className="w-full bg-[#141414] text-[#E4E3E0] hover:bg-[#2a2a2a] h-12 text-lg font-mono">
+              SIGN IN WITH GOOGLE
+            </Button>
+            <p className="mt-4 text-[10px] font-mono opacity-50">
+              Having trouble? <a href={window.location.href} target="_blank" rel="noopener noreferrer" className="underline hover:opacity-100">Open in a new tab</a>
+            </p>
+          </div>
         </motion.div>
       </div>
     );
@@ -760,63 +908,6 @@ export default function App() {
     );
   }
 
-  const chartData = [...dashboardLogs].reverse().map(log => ({
-    date: format(new Date(log.timestamp), 'MMM dd'),
-    actual: parseFloat((log.actualConsumption || 0).toFixed(2)),
-    calculated: parseFloat((log.calculatedConsumption || 0).toFixed(2)),
-    mode: log.ridingMode,
-    fuel: log.fuelType,
-    discrepancy: Math.abs(log.discrepancy || 0)
-  }));
-
-  const stats = {
-    avgConsumption: dashboardLogs.length > 0 
-      ? (dashboardLogs.reduce((acc, log) => acc + log.actualConsumption, 0) / dashboardLogs.length).toFixed(2)
-      : '0.00',
-    totalLiters: dashboardLogs.reduce((acc, log) => acc + log.actualQuantityFilled, 0).toFixed(1),
-    totalKms: dashboardLogs.reduce((acc, log) => acc + log.kmsSinceLastRefill, 0).toFixed(0),
-    maxDiscrepancy: dashboardLogs.length > 0
-      ? Math.max(...dashboardLogs.map(l => Math.abs(l.discrepancy || 0))).toFixed(2)
-      : '0.00',
-    totalCost: dashboardLogs.reduce((acc, log) => acc + (log.totalCost || 0), 0).toFixed(2),
-    avgCostPerKm: dashboardLogs.length > 0
-      ? (dashboardLogs.reduce((acc, log) => acc + (log.totalCost || 0), 0) / dashboardLogs.reduce((acc, log) => acc + log.kmsSinceLastRefill, 0)).toFixed(2)
-      : '0.00',
-    ecoEfficiency: (() => {
-      const ecoLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() === 'eco');
-      if (ecoLogs.length === 0) return '0.00';
-      return (ecoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / ecoLogs.length).toFixed(2);
-    })(),
-    ecoSavings: (() => {
-      const ecoLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() === 'eco');
-      const nonEcoLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() !== 'eco' && l.ridingMode);
-      if (ecoLogs.length === 0 || nonEcoLogs.length === 0) return '0.00';
-      
-      const ecoAvg = ecoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / ecoLogs.length;
-      const nonEcoAvg = nonEcoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / nonEcoLogs.length;
-      
-      return (ecoAvg - nonEcoAvg).toFixed(2);
-    })()
-  };
-
-  const modeEfficiencyData = RIDING_MODES.map(mode => {
-    const modeLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() === mode.toLowerCase());
-    const avg = modeLogs.length > 0 ? modeLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / modeLogs.length : 0;
-    return { mode, actual: parseFloat(avg.toFixed(2)) };
-  }).filter(d => d.actual > 0);
-
-  const fuelEfficiencyData = ['Standard', 'Premium'].map(fuel => {
-    const fuelLogs = dashboardLogs.filter(l => l.fuelType?.toLowerCase() === fuel.toLowerCase());
-    const avg = fuelLogs.length > 0 ? fuelLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / fuelLogs.length : 0;
-    return { fuel, actual: parseFloat(avg.toFixed(2)) };
-  }).filter(d => d.actual > 0);
-
-  const rideTypeEfficiencyData = ['City', 'Highway', 'Mixed'].map(type => {
-    const typeLogs = dashboardLogs.filter(l => (l.rideType || 'Mixed').toLowerCase() === type.toLowerCase());
-    const avg = typeLogs.length > 0 ? typeLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / typeLogs.length : 0;
-    return { type, actual: parseFloat(avg.toFixed(2)) };
-  }).filter(d => d.actual > 0);
-
   const lastLog = logs[0];
 
   const handleStartRefuel = () => {
@@ -830,103 +921,110 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] font-sans pb-20">
-      <header className="border-b border-[#141414] p-4 flex justify-between items-center bg-[#E4E3E0] sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-[#141414] text-[#E4E3E0] rounded-full">
-            {selectedVehicle?.type === '2 Wheeler' ? <Bike className="w-5 h-5" /> : <Car className="w-5 h-5" />}
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight font-mono leading-none">{selectedVehicle?.nickname?.toUpperCase()}</h1>
-            <p className="text-[10px] font-mono opacity-50 uppercase">{selectedVehicle?.registration}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            onClick={() => {
-              if (selectedVehicle) {
-                setEditVehicleData({
-                  nickname: selectedVehicle.nickname,
-                  registration: selectedVehicle.registration,
-                  type: selectedVehicle.type
-                });
-                setShowEditVehicleDialog(true);
-              }
-            }}
-          >
-            <Settings className="w-5 h-5" />
-          </Button>
-          <Button variant="ghost" size="icon" onClick={handleLogout}>
-            <LogOut className="w-5 h-5" />
-          </Button>
-        </div>
-      </header>
-
-      <main className="max-w-5xl mx-auto p-4 space-y-6">
-        {/* Reminders */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card className="bg-[#141414] text-[#E4E3E0] border-none">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-mono flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-orange-500" />
-                REFILL_CHECKLIST
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-xs space-y-1 font-mono opacity-80">
-              <p>1. PHOTO_TRIP_COMPUTER</p>
-              <p>2. NOTE_FUEL_QUANTITY</p>
-              <p>3. RESET_TRIP_COMPUTER</p>
-            </CardContent>
-          </Card>
-          
-          <Card className="border-[#141414] bg-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-mono flex items-center gap-2">
-                <TrendingUp className="w-4 h-4" />
-                LATEST_STATS
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-[10px] uppercase opacity-50 font-mono">Avg Consumption</p>
-                <p className="text-2xl font-bold font-mono">{stats.avgConsumption} <span className="text-xs">km/L</span></p>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase opacity-50 font-mono">ECO Efficiency</p>
-                <p className="text-2xl font-bold font-mono text-green-600">{stats.ecoEfficiency} <span className="text-xs">km/L</span></p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Tabs defaultValue="dashboard" className="w-full">
-          <TabsList className="grid w-full grid-cols-3 bg-transparent border border-[#141414] p-1 rounded-none h-auto">
-            <TabsTrigger value="dashboard" className="rounded-none data-[state=active]:bg-[#141414] data-[state=active]:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Dashboard</TabsTrigger>
-            <TabsTrigger value="report" className="rounded-none data-[state=active]:bg-[#141414] data-[state=active]:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Report</TabsTrigger>
-            <TabsTrigger value="history" className="rounded-none data-[state=active]:bg-[#141414] data-[state=active]:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">History</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="dashboard" className="space-y-6 mt-6">
-            <div className="flex flex-col sm:flex-row gap-4 items-end mb-4">
-              <div className="grid grid-cols-2 gap-2 flex-1">
-                <div className="space-y-1">
-                  <Label className="text-[10px] font-mono uppercase opacity-50">Start Date</Label>
-                  <Input 
-                    type="date" 
-                    value={dateRange.start} 
-                    onChange={e => setDateRange(prev => ({...prev, start: e.target.value}))}
-                    className="h-8 border-[#141414] rounded-none font-mono text-xs"
-                  />
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <header className="border-b border-[#141414] bg-[#E4E3E0] sticky top-0 z-10">
+          <div className="max-w-5xl mx-auto px-4">
+            <div className="py-4 flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-[#141414] text-[#E4E3E0] rounded-full">
+                  {selectedVehicle?.type === '2 Wheeler' ? <Bike className="w-5 h-5" /> : <Car className="w-5 h-5" />}
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-[10px] font-mono uppercase opacity-50">End Date</Label>
-                  <Input 
-                    type="date" 
-                    value={dateRange.end} 
-                    onChange={e => setDateRange(prev => ({...prev, end: e.target.value}))}
-                    className="h-8 border-[#141414] rounded-none font-mono text-xs"
-                  />
+                <div>
+                  <h1 className="text-lg font-bold tracking-tight font-mono leading-none">{selectedVehicle?.nickname?.toUpperCase()}</h1>
+                  <p className="text-[10px] font-mono opacity-50 uppercase">{selectedVehicle?.registration}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={() => {
+                    if (selectedVehicle) {
+                      setEditVehicleData({
+                        nickname: selectedVehicle.nickname,
+                        registration: selectedVehicle.registration,
+                        type: selectedVehicle.type
+                      });
+                      setShowEditVehicleDialog(true);
+                    }
+                  }}
+                >
+                  <Settings className="w-5 h-5" />
+                </Button>
+                <Button variant="ghost" size="icon" onClick={handleLogout}>
+                  <LogOut className="w-5 h-5" />
+                </Button>
+              </div>
+            </div>
+            
+            <div className="pb-4">
+              <TabsList className="grid w-full grid-cols-3 bg-transparent border border-[#141414] p-1 rounded-none h-auto m-0">
+                <TabsTrigger value="dashboard" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Dashboard</TabsTrigger>
+                <TabsTrigger value="report" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Report</TabsTrigger>
+                <TabsTrigger value="history" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">History</TabsTrigger>
+              </TabsList>
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+          <TabsContent value="dashboard" className="space-y-6 m-0 border-none outline-none focus-visible:ring-0">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Card className="bg-[#141414] text-[#E4E3E0] border-none">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-mono flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-orange-500" />
+                    REFILL_CHECKLIST
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="text-xs space-y-1 font-mono opacity-80">
+                  <p>1. PHOTO_TRIP_COMPUTER</p>
+                  <p>2. NOTE_FUEL_QUANTITY</p>
+                  <p>3. RESET_TRIP_COMPUTER</p>
+                </CardContent>
+              </Card>
+              
+              <Card className="border-[#141414] bg-transparent">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-mono flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4" />
+                    LATEST_STATS
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[10px] uppercase opacity-50 font-mono">Avg Consumption</p>
+                    <p className="text-2xl font-bold font-mono">{stats.avgConsumption} <span className="text-xs">km/L</span></p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase opacity-50 font-mono">ECO Efficiency</p>
+                    <p className="text-2xl font-bold font-mono text-green-600">{stats.ecoEfficiency} <span className="text-xs">km/L</span></p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="mt-6">
+              <div className="flex flex-col sm:flex-row gap-4 items-end mb-4">
+                <div className="grid grid-cols-2 gap-2 flex-1">
+                  <div className="space-y-1">
+                    <Label className="text-[10px] font-mono uppercase opacity-50">Start Date</Label>
+                    <Input 
+                      type="date" 
+                      value={dateRange.start} 
+                      onChange={e => setDateRange(prev => ({...prev, start: e.target.value}))}
+                      className="h-8 border-[#141414] rounded-none font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px] font-mono uppercase opacity-50">End Date</Label>
+                    <Input 
+                      type="date" 
+                      value={dateRange.end} 
+                      onChange={e => setDateRange(prev => ({...prev, end: e.target.value}))}
+                      className="h-8 border-[#141414] rounded-none font-mono text-xs"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1039,7 +1137,10 @@ export default function App() {
                           <TableCell className="font-mono text-[10px] uppercase font-bold">{type}</TableCell>
                           <TableCell className="font-mono text-[10px]">{avg.toFixed(2)}</TableCell>
                           <TableCell className="font-mono text-[10px]">{totalKms.toFixed(0)} km</TableCell>
-                          <TableCell className="font-mono text-[10px]">₹{costPerKm.toFixed(2)}</TableCell>
+                          <TableCell className="font-mono text-[10px] flex items-center gap-0.5">
+                            <IndianRupee className="w-2.5 h-2.5" />
+                            {costPerKm.toFixed(2)}
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -1077,7 +1178,10 @@ export default function App() {
                           <TableCell className="font-mono text-[10px] uppercase font-bold">{mode}</TableCell>
                           <TableCell className="font-mono text-[10px]">{avg.toFixed(2)}</TableCell>
                           <TableCell className="font-mono text-[10px]">{totalKms.toFixed(0)} km</TableCell>
-                          <TableCell className="font-mono text-[10px]">₹{costPerKm.toFixed(2)}</TableCell>
+                          <TableCell className="font-mono text-[10px] flex items-center gap-0.5">
+                            <IndianRupee className="w-2.5 h-2.5" />
+                            {costPerKm.toFixed(2)}
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -1144,7 +1248,7 @@ export default function App() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="report" className="mt-6 space-y-6">
+          <TabsContent value="report" className="space-y-6 m-0 border-none outline-none focus-visible:ring-0">
             <Card className="border-[#141414] bg-[#141414] text-[#E4E3E0] rounded-none">
               <CardHeader>
                 <CardTitle className="font-mono uppercase tracking-widest flex items-center gap-2">
@@ -1152,7 +1256,7 @@ export default function App() {
                   Efficiency Summary Report
                 </CardTitle>
                 <CardDescription className="text-[#E4E3E0] opacity-60 font-mono text-xs">
-                  {format(new Date(dateRange.start), 'dd/MM/yyyy')} to {format(new Date(dateRange.end), 'dd/MM/yyyy')}
+                  {format(safeDate(dateRange.start), 'dd/MM/yyyy')} to {format(safeDate(dateRange.end), 'dd/MM/yyyy')}
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-6 py-6 border-t border-[#E4E3E022]">
@@ -1229,7 +1333,10 @@ export default function App() {
                       </div>
                       <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-none">
                         <p className="text-[10px] uppercase opacity-50 font-mono">Money Saved</p>
-                        <p className="text-2xl font-bold font-mono text-green-700">₹{estimatedMoneySaved.toFixed(2)}</p>
+                        <p className="text-2xl font-bold font-mono text-green-700 flex items-center gap-1">
+                          <IndianRupee className="w-5 h-5" />
+                          {estimatedMoneySaved.toFixed(2)}
+                        </p>
                         <p className="text-[10px] font-serif italic mt-1">based on avg fuel price</p>
                       </div>
                     </div>
@@ -1248,11 +1355,17 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-4 mb-4">
                     <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-none">
                       <p className="text-[10px] uppercase opacity-50 font-mono">Total Spent</p>
-                      <p className="text-xl font-bold font-mono">₹{stats.totalCost}</p>
+                      <p className="text-xl font-bold font-mono flex items-center gap-1">
+                        <IndianRupee className="w-4 h-4" />
+                        {stats.totalCost}
+                      </p>
                     </div>
                     <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-none">
                       <p className="text-[10px] uppercase opacity-50 font-mono">Avg Cost / Km</p>
-                      <p className="text-xl font-bold font-mono">₹{stats.avgCostPerKm}</p>
+                      <p className="text-xl font-bold font-mono flex items-center gap-1">
+                        <IndianRupee className="w-4 h-4" />
+                        {stats.avgCostPerKm}
+                      </p>
                     </div>
                   </div>
 
@@ -1271,7 +1384,10 @@ export default function App() {
                           <div className="grid grid-cols-3 gap-2">
                             <div className="p-2 bg-white/40 border border-[#14141411]">
                               <p className="text-[8px] uppercase opacity-50 font-mono">Spent</p>
-                              <p className="text-xs font-bold font-mono">₹{totalFuelCost.toFixed(2)}</p>
+                              <p className="text-xs font-bold font-mono flex items-center gap-0.5">
+                                <IndianRupee className="w-2.5 h-2.5" />
+                                {totalFuelCost.toFixed(2)}
+                              </p>
                             </div>
                             <div className="p-2 bg-white/40 border border-[#14141411]">
                               <p className="text-[8px] uppercase opacity-50 font-mono">Distance</p>
@@ -1279,7 +1395,10 @@ export default function App() {
                             </div>
                             <div className="p-2 bg-blue-600 text-white border border-[#14141411]">
                               <p className="text-[8px] uppercase opacity-70 font-mono">Avg Cost/Km</p>
-                              <p className="text-xs font-bold font-mono">₹{avgCostPerKm}</p>
+                              <p className="text-xs font-bold font-mono flex items-center gap-0.5">
+                                <IndianRupee className="w-2.5 h-2.5" />
+                                {avgCostPerKm}
+                              </p>
                             </div>
                           </div>
                         </div>
@@ -1295,7 +1414,10 @@ export default function App() {
                             return (
                               <div key={mode} className="p-3 border border-[#14141411] bg-white/30 rounded-sm flex justify-between items-center">
                                 <span className="text-[10px] font-mono uppercase">{mode}</span>
-                                <span className="text-xs font-mono font-bold">₹{modeAvgCost} / km</span>
+                                <span className="text-xs font-mono font-bold flex items-center gap-0.5">
+                                  <IndianRupee className="w-2.5 h-2.5" />
+                                  {modeAvgCost} / km
+                                </span>
                               </div>
                             );
                           })}
@@ -1343,7 +1465,10 @@ export default function App() {
                           <TableCell className={`font-mono text-xs ${Math.abs(disc) > 0.5 ? 'text-orange-600 font-bold' : ''}`}>
                             {disc > 0 ? '+' : ''}{disc.toFixed(2)}
                           </TableCell>
-                          <TableCell className="font-mono text-xs font-bold">₹{costPerKm.toFixed(2)}</TableCell>
+                          <TableCell className="font-mono text-xs font-bold flex items-center gap-0.5">
+                            <IndianRupee className="w-3 h-3" />
+                            {costPerKm.toFixed(2)}
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -1456,7 +1581,7 @@ export default function App() {
                       <div className="flex items-center gap-3">
                         <AlertTriangle className="w-5 h-5 text-orange-500" />
                         <div>
-                          <p className="text-xs font-bold">{format(new Date(log.timestamp), 'dd/MM/yyyy')}</p>
+                          <p className="text-xs font-bold">{format(safeDate(log.timestamp), 'dd/MM/yyyy')}</p>
                           <p className="text-[10px] opacity-60">Mode: {log.ridingMode} | Fuel: {log.fuelType}</p>
                         </div>
                       </div>
@@ -1477,7 +1602,7 @@ export default function App() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="history" className="mt-6">
+          <TabsContent value="history" className="space-y-6 mt-6 m-0 border-none outline-none focus-visible:ring-0">
             <div className="flex flex-col md:flex-row gap-4 mb-4 items-end">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 flex-1">
                 <div className="space-y-1">
@@ -1554,7 +1679,7 @@ export default function App() {
                       className="border-b border-[#14141422] hover:bg-[#14141411] cursor-pointer group"
                       onClick={() => setSelectedLog(log)}
                     >
-                      <TableCell className="font-mono text-xs">{format(new Date(log.timestamp), 'dd/MM/yyyy')}</TableCell>
+                      <TableCell className="font-mono text-xs">{format(safeDate(log.timestamp), 'dd/MM/yyyy')}</TableCell>
                       <TableCell className="font-mono text-xs">{log.ridingMode}</TableCell>
                       <TableCell className="font-mono text-xs uppercase opacity-70">{log.rideType || 'Mixed'}</TableCell>
                       <TableCell className="font-mono text-xs font-bold">{(log.actualConsumption || 0).toFixed(2)}</TableCell>
@@ -1600,14 +1725,14 @@ export default function App() {
               </Table>
             </Card>
           </TabsContent>
-        </Tabs>
-      </main>
+        </main>
+      </Tabs>
 
       {/* Log Details Dialog */}
       <Dialog open={!!selectedLog} onOpenChange={(open) => !open && setSelectedLog(null)}>
         <DialogContent className="sm:max-w-[500px] bg-[#E4E3E0] border-[#141414] rounded-none p-6 overflow-y-auto max-h-[90vh]">
           <DialogHeader>
-            <DialogTitle className="font-mono uppercase tracking-widest border-b border-[#14141422] pb-2">Log Details: {selectedLog && format(new Date(selectedLog.timestamp), 'dd/MM/yyyy HH:mm')}</DialogTitle>
+            <DialogTitle className="font-mono uppercase tracking-widest border-b border-[#14141422] pb-2">Log Details: {selectedLog && format(safeDate(selectedLog.timestamp), 'dd/MM/yyyy HH:mm')}</DialogTitle>
           </DialogHeader>
           
           {selectedLog && (
@@ -1654,11 +1779,17 @@ export default function App() {
                 </div>
                 <div className="p-2 bg-white/30 border border-[#14141411]">
                   <p className="opacity-50 uppercase text-[9px]">Total Cost</p>
-                  <p className="font-bold">₹{(selectedLog.totalCost || 0).toFixed(2)}</p>
+                  <p className="font-bold flex items-center gap-0.5">
+                    <IndianRupee className="w-3 h-3" />
+                    {(selectedLog.totalCost || 0).toFixed(2)}
+                  </p>
                 </div>
                 <div className="p-2 bg-white/30 border border-[#14141411]">
                   <p className="opacity-50 uppercase text-[9px]">Price/Liter</p>
-                  <p className="font-bold">₹{(selectedLog.pricePerLiter || 0).toFixed(2)}</p>
+                  <p className="font-bold flex items-center gap-0.5">
+                    <IndianRupee className="w-3 h-3" />
+                    {(selectedLog.pricePerLiter || 0).toFixed(2)}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1937,7 +2068,7 @@ export default function App() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Total Cost (₹)</Label>
+                      <Label className="font-mono text-[10px] uppercase">Total Cost (<IndianRupee className="w-2.5 h-2.5 inline" />)</Label>
                       <Input 
                         value={formData.totalCost} 
                         onChange={e => setFormData({...formData, totalCost: e.target.value})}
@@ -1947,7 +2078,7 @@ export default function App() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Price / Liter (₹)</Label>
+                      <Label className="font-mono text-[10px] uppercase">Price / Liter (<IndianRupee className="w-2.5 h-2.5 inline" />)</Label>
                       <Input 
                         value={formData.pricePerLiter} 
                         onChange={e => setFormData({...formData, pricePerLiter: e.target.value})}

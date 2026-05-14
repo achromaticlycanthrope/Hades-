@@ -6,12 +6,30 @@
     <meta name="theme-color" content="#141414" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <link rel="manifest" href="/manifest.json" />
-    <link rel="apple-touch-icon" href="https://picsum.photos/seed/gsfuel/192/192" />
     <title>GS Fuel Tracker</title>
   </head>
   <body>
     <div id="root"></div>
+    <div id="loading-fallback" style="position: fixed; inset: 0; display: flex; flex-direction: column; items: center; justify-content: center; background: #E4E3E0; z-index: 9999; font-family: sans-serif; text-align: center; padding: 20px;">
+      <div style="margin-bottom: 20px; font-weight: bold;">Loading GS Fuel Tracker...</div>
+      <p style="font-size: 14px; color: #666; margin-bottom: 20px;">If the app doesn't load within a few seconds, try opening it in a new tab:</p>
+      <a href="." target="_blank" style="display: inline-block; padding: 12px 24px; background: #141414; color: #E4E3E0; text-decoration: none; border-radius: 4px; font-weight: bold;">Open in New Tab</a>
+    </div>
+    <script>
+      // Automatically hide fallback after 5 seconds if main script fails to load
+      setTimeout(() => {
+        if (!window.__APP_LOADED__) {
+          console.log("App might have failed to load, showing fallback link.");
+        }
+      }, 5000);
+
+      // Clear service workers
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(var i=0; i<regs.length; i++) regs[i].unregister();
+        });
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
