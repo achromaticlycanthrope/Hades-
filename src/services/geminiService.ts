@@ -1,15 +1,3 @@
-import { GoogleGenAI, Type } from "@google/genai";
-
-let aiInstance: GoogleGenAI | null = null;
-
-function getAI() {
-  if (!aiInstance) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    aiInstance = new GoogleGenAI({ apiKey: apiKey || "" });
-  }
-  return aiInstance;
-}
-
 export interface TripData {
   kmsSinceLastRefill: number;
   totalKms: number;
@@ -28,103 +16,83 @@ export interface ReceiptData {
 }
 
 export async function analyzeTripPhoto(base64Image: string): Promise<TripData | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error("GEMINI_API_KEY is not defined");
-    return null;
-  }
+  console.log('Sending trip photo for analysis. Image length:', base64Image.length);
   try {
-    const ai = getAI();
-    const prompt = "Analyze this BMW R1300GS trip computer photo. Extract the following values: \n1. Kilometers done since last refill (Trip 1 or Trip 2, usually labeled 'Trip').\n2. Total kilometers (Odometer).\n3. Current riding mode (e.g., Road, Dynamic, Eco, Rain, Enduro).\n4. Calculated fuel consumption (usually in km/L). If it's in L/100km, convert it to km/L (100 divided by the value).\n5. The current time shown on the dashboard (usually in HH:mm format).\nReturn the data in JSON format.";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: base64Image.split(',')[1] || base64Image
-            }
-          },
-          { text: prompt }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            kmsSinceLastRefill: { type: Type.NUMBER },
-            totalKms: { type: Type.NUMBER },
-            ridingMode: { type: Type.STRING },
-            calculatedConsumption: { type: Type.NUMBER },
-            time: { type: Type.STRING }
-          },
-          required: ["kmsSinceLastRefill", "totalKms", "ridingMode", "calculatedConsumption"]
-        }
-      }
+    const response = await fetch("/api/analyze-trip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: base64Image }),
+      signal: controller.signal
     });
 
-    const text = response.text;
-    if (text) {
-      return JSON.parse(text) as TripData;
+    clearTimeout(timeoutId);
+    console.log('Trip analysis response status:', response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Trip analysis server error text:', errorText);
+      let errorMessage = `Server error: ${response.status}`;
+      try {
+        const errorData = JSON.parse(errorText);
+        errorMessage = errorData.error || errorMessage;
+      } catch (e) {
+        errorMessage = errorText.slice(0, 300) || errorMessage;
+      }
+      throw new Error(errorMessage);
     }
-    return null;
-  } catch (error) {
+
+    const result = await response.json();
+    console.log('Trip analysis result:', result);
+    return result;
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      throw new Error('Analysis timed out (60s). Please check your internet connection.');
+    }
     console.error("Error analyzing photo:", error);
-    return null;
+    throw new Error(`Analysis Error: ${error.message || String(error)}`);
   }
 }
 
 export async function analyzeReceipts(base64Images: string[]): Promise<ReceiptData | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error("GEMINI_API_KEY is not defined");
-    return null;
-  }
+  console.log('Sending receipts for analysis. Count:', base64Images.length);
   try {
-    const ai = getAI();
-    const parts = base64Images.map(img => ({
-      inlineData: {
-        mimeType: "image/jpeg",
-        data: img.split(',')[1] || img,
-      },
-    }));
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s for multiple images
 
-    const prompt = "Analyze these fuel receipts. Extract the following values: \n1. Date of filling (YYYY-MM-DD). Note: The date on the receipt is in DD/MM/YY or DD/MM/YYYY format.\n2. Time of filling (HH:mm).\n3. Quantity filled (Liters).\n4. Fuel grade (e.g., Standard, Premium, 95, 98).\n5. Total cost paid.\n6. Price per liter.\nIf there are multiple receipts, sum the quantity and total cost. Use the date/time from the most recent receipt. Return the data in JSON format.";
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: {
-        parts: [
-          ...parts,
-          { text: prompt }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            date: { type: Type.STRING },
-            time: { type: Type.STRING },
-            quantity: { type: Type.NUMBER },
-            fuelType: { type: Type.STRING },
-            totalCost: { type: Type.NUMBER },
-            pricePerLiter: { type: Type.NUMBER },
-          }
-        }
-      }
+    const response = await fetch("/api/analyze-receipts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images: base64Images }),
+      signal: controller.signal
     });
 
-    const text = response.text;
-    if (text) {
-      return JSON.parse(text) as ReceiptData;
+    clearTimeout(timeoutId);
+    console.log('Receipt analysis response status:', response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Receipt analysis server error text:', errorText);
+      let errorMessage = `Server error: ${response.status}`;
+      try {
+        const errorData = JSON.parse(errorText);
+        errorMessage = errorData.error || errorMessage;
+      } catch (e) {
+        errorMessage = errorText.slice(0, 300) || errorMessage;
+      }
+      throw new Error(errorMessage);
     }
-    return null;
-  } catch (error) {
+
+    const result = await response.json();
+    console.log('Receipt analysis result:', result);
+    return result;
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      throw new Error('Receipt analysis timed out. Please try fewer images or check your connection.');
+    }
     console.error("Error analyzing receipts:", error);
-    return null;
+    throw new Error(`Receipt Analysis Error: ${error.message || String(error)}`);
   }
 }

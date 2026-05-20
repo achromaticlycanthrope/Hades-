@@ -117,6 +117,13 @@ interface FuelLog {
   receipts?: string[];
 }
 
+interface OdometerDiscrepancy {
+  calculatedKms: number;
+  enteredKms: number;
+  presentOdometer: number;
+  previousOdometer: number;
+}
+
 enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -249,6 +256,8 @@ function AppContent() {
     }
   };
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [discrepancyData, setDiscrepancyData] = useState<OdometerDiscrepancy | null>(null);
+  const [showDiscrepancyDialog, setShowDiscrepancyDialog] = useState(false);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [refuelStep, setRefuelStep] = useState<'initial' | 'photo' | 'receipts' | 'reset' | 'form'>('initial');
   const [selectedTripPhoto, setSelectedTripPhoto] = useState<string | null>(null);
@@ -655,44 +664,41 @@ function AppContent() {
     setIsAnalyzing(true);
     toast.info("Analyzing trip computer photo...");
 
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const base64 = reader.result as string;
-        setSelectedTripPhoto(base64);
-        const data = await analyzeTripPhoto(base64);
-        
-        if (data) {
-          setFormData(prev => {
-            let newTimestamp = prev.timestamp;
-            if (data.time) {
-              const today = format(new Date(), "yyyy-MM-dd");
-              newTimestamp = `${today}T${data.time}`;
-            }
+    try {
+      const compressedBase64 = await compressImage(file);
+      setSelectedTripPhoto(compressedBase64);
+      const data = await analyzeTripPhoto(compressedBase64);
+      
+      if (data) {
+        setFormData(prev => {
+          let newTimestamp = prev.timestamp;
+          if (data.time) {
+            const today = format(new Date(), "yyyy-MM-dd");
+            newTimestamp = `${today}T${data.time}`;
+          }
 
-            return {
-              ...prev,
-              kmsSinceLastRefill: data.kmsSinceLastRefill.toString(),
-              totalKms: data.totalKms.toString(),
-              ridingMode: data.ridingMode || prev.ridingMode,
-              calculatedConsumption: data.calculatedConsumption.toString(),
-              timestamp: newTimestamp,
-            };
-          });
-          toast.success("Trip data extracted!");
-          if (!isEditing) setRefuelStep('receipts');
-        } else {
-          toast.error("Could not read trip data.");
-          if (!isEditing) setRefuelStep('receipts');
-        }
-      } catch (error) {
-        console.error("Photo analysis error:", error);
-        toast.error("An error occurred during photo analysis.");
-      } finally {
-        setIsAnalyzing(false);
+          return {
+            ...prev,
+            kmsSinceLastRefill: data.kmsSinceLastRefill?.toString() || prev.kmsSinceLastRefill,
+            totalKms: data.totalKms?.toString() || prev.totalKms,
+            ridingMode: data.ridingMode || prev.ridingMode,
+            calculatedConsumption: data.calculatedConsumption?.toString() || prev.calculatedConsumption,
+            timestamp: newTimestamp,
+          };
+        });
+        toast.success("Trip data extracted!");
+        if (!isEditing) setRefuelStep('receipts');
+      } else {
+        toast.error("Could not read trip data.");
+        if (!isEditing) setRefuelStep('receipts');
       }
-    };
-    reader.readAsDataURL(file);
+    } catch (error: any) {
+      console.error("Photo analysis error:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      toast.error(`An error occurred during photo analysis: ${errorMessage}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleReceiptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -702,18 +708,19 @@ function AppContent() {
     setIsAnalyzing(true);
     toast.info("Analyzing receipts...");
 
-    const base64Promises = files.map((file: File) => {
-      return new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(file);
-      });
-    });
-
-    const base64s = await Promise.all(base64Promises);
-    setSelectedReceipts(prev => [...prev, ...base64s]);
-
     try {
+      const base64Promises = files.map((file: File) => compressImage(file).catch(err => {
+        console.error("Compression failed for a receipt", err);
+        return null;
+      }));
+
+      const results = await Promise.all(base64Promises);
+      const base64s = results.filter((b): b is string => b !== null);
+      
+      setSelectedReceipts(prev => [...prev, ...base64s]);
+
+      if (base64s.length === 0) throw new Error("No valid images could be processed");
+
       const data = await analyzeReceipts(base64s);
 
       if (data) {
@@ -736,32 +743,46 @@ function AppContent() {
       } else {
         toast.error("Could not read receipt data.");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Receipt analysis error:", error);
-      toast.error("An error occurred during receipt analysis.");
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      toast.error(`An error occurred during receipt analysis: ${errorMessage}`);
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isAnalyzing) {
-      console.warn("Already submitting, ignoring request.");
-      return;
+  const getPreviousOdometer = (): number => {
+    if (!logs || logs.length === 0) return 0;
+    
+    // Sort logs by timestamp desc
+    const sorted = [...logs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    
+    if (isEditing && editingLogId) {
+      // Find the log currently being edited in the sorted list
+      const index = sorted.findIndex(log => log.id === editingLogId);
+      if (index !== -1 && index + 1 < sorted.length) {
+        return sorted[index + 1].totalKms;
+      }
+    } else {
+      if (sorted.length > 0) {
+        return sorted[0].totalKms;
+      }
     }
+    return 0;
+  };
 
+  const executeSave = async (kms: number, totalKms: number) => {
     if (!user || !user.uid) {
       toast.error("You must be logged in to save logs.");
       return;
     }
 
-    const kms = parseFloat(formData.kmsSinceLastRefill);
     const liters = parseFloat(formData.actualQuantityFilled);
     const calcCons = parseFloat(formData.calculatedConsumption) || 0;
 
-    if (isNaN(kms) || isNaN(liters) || kms <= 0) {
-      toast.error("Please enter valid numbers for kms (greater than 0) and liters.");
+    if (isNaN(liters) || liters <= 0) {
+      toast.error("Please enter a valid amount of liters filled.");
       return;
     }
 
@@ -775,7 +796,7 @@ function AppContent() {
 
     setIsAnalyzing(true);
     toast.info("Saving log...");
-    console.log("Starting handleSubmit (without photo upload)...");
+    console.log("Starting executeSave...");
 
     try {
       const payload: any = {
@@ -783,7 +804,7 @@ function AppContent() {
         vehicleId: selectedVehicle?.id,
         timestamp: formData.timestamp,
         kmsSinceLastRefill: kms,
-        totalKms: parseFloat(formData.totalKms) || 0,
+        totalKms: totalKms,
         ridingMode: formData.ridingMode,
         rideType: formData.rideType,
         calculatedConsumption: calcCons,
@@ -850,6 +871,58 @@ function AppContent() {
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isAnalyzing) {
+      console.warn("Already submitting, ignoring request.");
+      return;
+    }
+
+    if (!user || !user.uid) {
+      toast.error("You must be logged in to save logs.");
+      return;
+    }
+
+    const kms = parseFloat(formData.kmsSinceLastRefill);
+    const totalKms = parseFloat(formData.totalKms);
+    const liters = parseFloat(formData.actualQuantityFilled);
+
+    if (isNaN(kms) || kms <= 0) {
+      toast.error("Please enter valid trip Kms (greater than 0).");
+      return;
+    }
+    if (isNaN(totalKms) || totalKms <= 0) {
+      toast.error("Please enter a valid Odometer reading.");
+      return;
+    }
+    if (isNaN(liters) || liters <= 0) {
+      toast.error("Please enter actual quantity filled.");
+      return;
+    }
+
+    // Previous odometer check for validation/comparison
+    const previousOdometer = getPreviousOdometer();
+    if (previousOdometer > 0 && totalKms > previousOdometer) {
+      const calculatedKms = totalKms - previousOdometer;
+      const difference = Math.abs(calculatedKms - kms);
+      
+      const DISCREPANCY_THRESHOLD = 5.0; // Trigger if physical difference exceeds 5 km
+
+      if (difference > DISCREPANCY_THRESHOLD) {
+        setDiscrepancyData({
+          calculatedKms,
+          enteredKms: kms,
+          presentOdometer: totalKms,
+          previousOdometer
+        });
+        setShowDiscrepancyDialog(true);
+        return;
+      }
+    }
+
+    await executeSave(kms, totalKms);
   };
 
   if (hasError) {
@@ -2171,7 +2244,7 @@ function AppContent() {
             type="file" 
             ref={fileInputRef} 
             className="hidden" 
-            accept="image/*" 
+            accept="image/jpeg,image/png,image/heic,image/*"
             onChange={async (e) => {
               await handlePhotoUpload(e);
             }}
@@ -2180,12 +2253,98 @@ function AppContent() {
             type="file" 
             ref={receiptInputRef} 
             className="hidden" 
-            accept="image/*" 
+            accept="image/jpeg,image/png,image/heic,image/*" 
             multiple
             onChange={handleReceiptUpload}
           />
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={showDiscrepancyDialog} onOpenChange={setShowDiscrepancyDialog}>
+        <AlertDialogContent className="bg-[#E4E3E0] border-2 border-[#141414] rounded-none p-6 max-w-md">
+          <AlertDialogHeader className="space-y-3">
+            <div className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="w-6 h-6 shrink-0 text-red-600" />
+              <AlertDialogTitle className="font-mono text-lg uppercase font-bold text-red-700">
+                Odometer Discrepancy Detected
+              </AlertDialogTitle>
+            </div>
+            <AlertDialogDescription className="text-sm font-serif text-[#141414] leading-relaxed">
+              We detected a significant difference between your entered trip distance and the distance calculated from your odometer reading difference.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {discrepancyData && (
+            <div className="my-5 p-4 border border-[#141414] bg-[#f0efe9] space-y-3 font-mono text-xs text-[#141414]">
+              <div className="flex justify-between border-b border-[#14141422] pb-1.5">
+                <span className="opacity-70">Present Odometer:</span>
+                <span className="font-bold">{discrepancyData.presentOdometer} km</span>
+              </div>
+              <div className="flex justify-between border-b border-[#14141422] pb-1.5">
+                <span className="opacity-70">Previous Odometer:</span>
+                <span className="font-bold">{discrepancyData.previousOdometer} km</span>
+              </div>
+              <div className="flex justify-between border-b border-[#14141422] pb-1.5 bg-amber-500/10 px-1 py-0.5">
+                <span className="font-semibold text-amber-950">Calculated Trip Distance:</span>
+                <span className="font-bold text-amber-950">{discrepancyData.calculatedKms} km</span>
+              </div>
+              <div className="flex justify-between border-b border-[#14141422] pb-1.5 bg-blue-500/10 px-1 py-0.5">
+                <span className="font-semibold text-blue-950">Entered Trip Distance:</span>
+                <span className="font-bold text-blue-950">{discrepancyData.enteredKms} km</span>
+              </div>
+              <div className="text-[11px] leading-tight font-sans italic text-[#141414]/70 pt-1">
+                The difference is <strong className="text-red-700 font-mono">{Math.abs(discrepancyData.calculatedKms - discrepancyData.enteredKms).toFixed(1)} km</strong>. Which value is correct?
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2 mt-4">
+            <Button
+              type="button"
+              onClick={async () => {
+                if (discrepancyData) {
+                  setFormData(prev => ({ ...prev, kmsSinceLastRefill: discrepancyData.calculatedKms.toString() }));
+                  setShowDiscrepancyDialog(false);
+                  await executeSave(discrepancyData.calculatedKms, discrepancyData.presentOdometer);
+                }
+              }}
+              className="w-full bg-[#141414] hover:bg-[#222222] text-[#E4E3E0] rounded-none font-mono text-xs uppercase h-11 flex justify-between px-4 items-center"
+            >
+              <span>Use Calculated Distance</span>
+              <span className="bg-[#E4E3E0] text-[#141414] px-2 py-0.5 font-bold font-mono text-[10px]">
+                {discrepancyData?.calculatedKms} km
+              </span>
+            </Button>
+
+            <Button
+              type="button"
+              onClick={async () => {
+                if (discrepancyData) {
+                  setShowDiscrepancyDialog(false);
+                  await executeSave(discrepancyData.enteredKms, discrepancyData.presentOdometer);
+                }
+              }}
+              className="w-full border-2 border-[#141414] hover:bg-[#141414]/5 bg-transparent text-[#141414] rounded-none font-mono text-xs uppercase h-11 flex justify-between px-4 items-center"
+            >
+              <span>Keep Entered Distance</span>
+              <span className="bg-[#141414] text-[#E4E3E0] px-2 py-0.5 font-bold font-mono text-[10px]">
+                {discrepancyData?.enteredKms} km
+              </span>
+            </Button>
+
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setShowDiscrepancyDialog(false);
+              }}
+              className="w-full hover:bg-[#141414]/5 text-[#141414]/70 hover:text-[#141414] rounded-none font-mono text-[11px] uppercase h-10 mt-1"
+            >
+              Correct Manually / Go Back
+            </Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={showEditVehicleDialog} onOpenChange={setShowEditVehicleDialog}>
         <DialogContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none max-w-sm">

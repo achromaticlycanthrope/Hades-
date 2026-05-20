@@ -1,5 +1,10 @@
 {
   "name": "GS Fuel Tracker",
   "description": "Track fuel consumption and efficiency for your vehicle using AI-powered trip computer and receipt analysis.",
-  "requestFramePermissions": ["camera"]
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
