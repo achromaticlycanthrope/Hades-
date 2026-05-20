@@ -1375,14 +1375,25 @@ function AppContent() {
               </div>
             </div>
 
-            <Button 
-              type="submit" 
-              disabled={obIsSubmitting}
-              className="w-full bg-[#141414] text-[#E4E3E0] rounded-none hover:bg-[#2a2a2a] transition duration-150 py-3 uppercase font-mono tracking-wider h-12 text-xs"
-            >
-              {obIsSubmitting ? <RefreshCw className="animate-spin w-4 h-4 mr-2 inline" /> : null}
-              Initialize Account & Vehicle
-            </Button>
+            <div className="flex flex-col gap-2 pt-2 border-t border-[#141414]/10">
+              <Button 
+                type="submit" 
+                disabled={obIsSubmitting}
+                className="w-full bg-[#141414] text-[#E4E3E0] rounded-none hover:bg-[#2a2a2a] transition duration-150 py-3 uppercase font-mono tracking-wider h-11 text-xs cursor-pointer"
+              >
+                {obIsSubmitting ? <RefreshCw className="animate-spin w-4 h-4 mr-2 inline" /> : null}
+                Initialize Account & Vehicle
+              </Button>
+              
+              <Button
+                type="button"
+                onClick={handleLogout}
+                variant="outline"
+                className="w-full border-[#141414] rounded-none text-[#141414] hover:bg-[#1414140a] transition duration-150 py-3 uppercase font-mono tracking-wider h-11 text-xs cursor-pointer"
+              >
+                Sign Out / Switch Account
+              </Button>
+            </div>
           </form>
         </motion.div>
       </div>
