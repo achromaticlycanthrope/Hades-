@@ -11,6 +11,7 @@ import {
   collection, 
   addDoc, 
   updateDoc,
+  setDoc,
   deleteDoc,
   doc,
   getDocs,
@@ -51,7 +52,6 @@ import {
   Car,
   Calendar as CalendarIcon,
   Settings,
-  IndianRupee,
   RefreshCw,
   Filter,
   FileText,
@@ -63,7 +63,9 @@ import {
   Trash2,
   Edit,
   Save,
-  X
+  X,
+  MessageSquarePlus,
+  Copy
 } from 'lucide-react';
 import { format, subDays, isWithinInterval, startOfDay, endOfDay } from 'date-fns';
 import { Button } from '@/components/ui/button';
@@ -75,7 +77,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -205,6 +207,199 @@ function AppContent() {
   const [hasError, setHasError] = useState<boolean>(false);
   const [errorInfo, setErrorInfo] = useState<string | null>(null);
 
+  // User profile / regional settings
+  interface UserSetting {
+    distanceUnit: 'km' | 'mi';
+    volumeUnit: 'L' | 'gal_us' | 'gal_uk';
+    currencyUnit: string;
+    consumptionUnit: 'km/L' | 'L/100km' | 'MPG (US)' | 'MPG (UK)' | 'mi/L';
+    onboarded: boolean;
+  }
+
+  const [userProfile, setUserProfile] = useState<UserSetting | null>(null);
+  const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
+
+  // Feedback System States
+  const [showFeedbackDialog, setShowFeedbackDialog] = useState(false);
+  const [feedbackCategory, setFeedbackCategory] = useState<'Bug' | 'Feature Request' | 'Suggestion' | 'Other'>('Suggestion');
+  const [feedbackText, setFeedbackText] = useState('');
+  const [isFeedbackSubmitting, setIsFeedbackSubmitting] = useState(false);
+  const [allFeedbacks, setAllFeedbacks] = useState<any[]>([]);
+
+  // Subscribe to feedbacks (Admins see all; users see their own)
+  useEffect(() => {
+    if (!user) {
+      setAllFeedbacks([]);
+      return;
+    }
+
+    const isAdminUser = userProfile?.role === 'admin' || user?.email === 'turbocharged9000@gmail.com';
+
+    let q;
+    try {
+      q = isAdminUser 
+        ? query(collection(db, 'feedbacks'), orderBy('timestamp', 'desc'))
+        : query(collection(db, 'feedbacks'), where('userId', '==', user.uid), orderBy('timestamp', 'desc'));
+    } catch (e) {
+      // fallback if indexing/timestamp order is not active or fails
+      q = isAdminUser 
+        ? query(collection(db, 'feedbacks'))
+        : query(collection(db, 'feedbacks'), where('userId', '==', user.uid));
+    }
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fb = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setAllFeedbacks(fb);
+    }, (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, 'feedbacks');
+      } catch (e) {
+        console.error("Feedback fetch subscription error:", e);
+      }
+    });
+
+    return unsubscribe;
+  }, [user, userProfile]);
+
+  const handleSubmitFeedback = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feedbackText.trim()) {
+      toast.error("Please describe your feedback, suggestion or bug.");
+      return;
+    }
+    setIsFeedbackSubmitting(true);
+    try {
+      const payload: any = {
+        category: feedbackCategory,
+        text: feedbackText.trim(),
+        timestamp: new Date().toISOString()
+      };
+      if (user) {
+        payload.userId = user.uid;
+        if (user.email) {
+          payload.userEmail = user.email;
+        }
+      }
+      await addDoc(collection(db, 'feedbacks'), payload);
+      toast.success("Thank you! Your feedback has been stored securely.");
+      setFeedbackText('');
+      setShowFeedbackDialog(false);
+    } catch (err: any) {
+      try {
+        handleFirestoreError(err, OperationType.WRITE, 'feedbacks');
+      } catch (e) {
+        console.error("Feedback submit error:", e);
+        toast.error("Failed to submit feedback. Please try again.");
+      }
+    } finally {
+      setIsFeedbackSubmitting(false);
+    }
+  };
+
+  // Onboarding Form States
+  const [obPreset, setObPreset] = useState<string>("india");
+  const [obDistanceUnit, setObDistanceUnit] = useState<'km' | 'mi'>("km");
+  const [obVolumeUnit, setObVolumeUnit] = useState<'L' | 'gal_us' | 'gal_uk'>("L");
+  const [obCurrency, setObCurrency] = useState<string>("₹");
+  const [obConsumptionUnit, setObConsumptionUnit] = useState<'km/L' | 'L/100km' | 'MPG (US)' | 'MPG (UK)' | 'mi/L'>("km/L");
+
+  const [obVehicleName, setObVehicleName] = useState<string>("MY BIKE");
+  const [obVehicleType, setObVehicleType] = useState<'2 Wheeler' | '4 Wheeler'>("2 Wheeler");
+  const [obVehicleReg, setObVehicleReg] = useState<string>("");
+  const [obIsSubmitting, setObIsSubmitting] = useState<boolean>(false);
+
+  // Sync preset selections
+  useEffect(() => {
+    if (obPreset === "india") {
+      setObDistanceUnit("km");
+      setObVolumeUnit("L");
+      setObCurrency("₹");
+      setObConsumptionUnit("km/L");
+    } else if (obPreset === "us") {
+      setObDistanceUnit("mi");
+      setObVolumeUnit("gal_us");
+      setObCurrency("$");
+      setObConsumptionUnit("MPG (US)");
+    } else if (obPreset === "europe") {
+      setObDistanceUnit("km");
+      setObVolumeUnit("L");
+      setObCurrency("€");
+      setObConsumptionUnit("L/100km");
+    } else if (obPreset === "uk") {
+      setObDistanceUnit("mi");
+      setObVolumeUnit("gal_uk");
+      setObCurrency("£");
+      setObConsumptionUnit("MPG (UK)");
+    }
+  }, [obPreset]);
+
+  // Handle Onboarding Submit Flow
+  const handleCompleteOnboarding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    if (!obVehicleName.trim()) {
+      toast.error("Please provide a nickname for your vehicle.");
+      return;
+    }
+    setObIsSubmitting(true);
+    toast.info("Configuring account & vehicle...");
+
+    try {
+      // 1. Create User Settings Document
+      await setDoc(doc(db, 'users', user.uid), {
+        role: 'user',
+        distanceUnit: obDistanceUnit,
+        volumeUnit: obVolumeUnit,
+        currencyUnit: obCurrency,
+        consumptionUnit: obConsumptionUnit,
+        onboarded: true,
+        createdAt: new Date().toISOString()
+      });
+
+      // 2. Create Their First Vehicle Document
+      await addDoc(collection(db, 'vehicles'), {
+        userId: user.uid,
+        nickname: obVehicleName.trim().toUpperCase(),
+        type: obVehicleType,
+        registration: obVehicleReg.trim().toUpperCase() || 'DEFAULT',
+        createdAt: new Date().toISOString()
+      });
+
+      toast.success("Account and first vehicle successfully configured!");
+      setShowOnboardingDialog(false);
+    } catch (err: any) {
+      console.error("Error setting up login details:", err);
+      toast.error(`Setup Error: ${err.message || String(err)}`);
+    } finally {
+      setObIsSubmitting(false);
+    }
+  };
+
+  // Editing regional settings state inside settings dialog
+  const [editDistanceUnit, setEditDistanceUnit] = useState<'km' | 'mi'>('km');
+  const [editVolumeUnit, setEditVolumeUnit] = useState<'L' | 'gal_us' | 'gal_uk'>('L');
+  const [editCurrency, setEditCurrency] = useState<string>('$');
+  const [editConsumptionUnit, setEditConsumptionUnit] = useState<'km/L' | 'L/100km' | 'MPG (US)' | 'MPG (UK)' | 'mi/L'>('km/L');
+
+  // Dynamic helper selectors
+  const getDistanceUnit = () => userProfile?.distanceUnit || 'km';
+  const getVolumeUnitLabel = () => {
+    const v = userProfile?.volumeUnit || 'L';
+    if (v === 'L') return 'Liters';
+    if (v === 'gal_us') return 'Gallons (US)';
+    return 'Gallons (UK)';
+  };
+  const getVolumeUnitCode = () => {
+    const v = userProfile?.volumeUnit || 'L';
+    if (v === 'L') return 'L';
+    return 'gal';
+  };
+  const getCurrencySymbol = () => userProfile?.currencyUnit || '$';
+  const getConsumptionUnit = () => userProfile?.consumptionUnit || 'km/L';
+
   useEffect(() => {
     const handleError = (error: ErrorEvent) => {
       console.error("Global captured error:", error);
@@ -214,6 +409,53 @@ function AppContent() {
     window.addEventListener('error', handleError);
     return () => window.removeEventListener('error', handleError);
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log("Auth state changed:", user?.email);
+      setUser(user);
+      if (!user) {
+        setLoading(false);
+      }
+    }, (error) => {
+      console.error("Auth error:", error);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setUserProfile(null);
+      setShowOnboardingDialog(false);
+      return;
+    }
+
+    const docRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setUserProfile({
+          distanceUnit: data.distanceUnit || 'km',
+          volumeUnit: data.volumeUnit || 'L',
+          currencyUnit: data.currencyUnit || '$',
+          consumptionUnit: data.consumptionUnit || 'km/L',
+          onboarded: data.onboarded ?? true
+        });
+        setShowOnboardingDialog(false);
+      } else {
+        // First-time setup!
+        setUserProfile(null);
+        setShowOnboardingDialog(true);
+      }
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching user profile:", error);
+      setLoading(false);
+    });
+
+    return unsubscribe;
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -334,8 +576,14 @@ function AppContent() {
         : 0;
         
       const nonEcoLogs = dashboardLogs.filter(l => l.ridingMode?.toLowerCase() !== 'eco' && l.ridingMode);
+      const conU = getConsumptionUnit();
+      const isL100 = conU === 'L/100km';
+      const nonEcoAvg = nonEcoLogs.length > 0 
+        ? (nonEcoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / nonEcoLogs.length) 
+        : 0;
+
       const ecoSav = (ecoLogs.length > 0 && nonEcoLogs.length > 0)
-        ? (ecoEff - (nonEcoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / nonEcoLogs.length))
+        ? (isL100 ? (nonEcoAvg - ecoEff) : (ecoEff - nonEcoAvg))
         : 0;
 
       return {
@@ -400,18 +648,6 @@ function AppContent() {
   }, [dashboardLogs]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      console.log("Auth state changed:", user?.email);
-      setUser(user);
-      setLoading(false);
-    }, (error) => {
-      console.error("Auth error:", error);
-      setLoading(false);
-    });
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
     if (!user) return;
 
     const q = query(
@@ -437,18 +673,20 @@ function AppContent() {
           handleMigrateLogs(firstVehicle.id);
         }
       } else {
-        // Auto-create a default vehicle if none exists
-        try {
-          const docRef = await addDoc(collection(db, 'vehicles'), {
-            userId: user.uid,
-            nickname: 'MY BIKE',
-            type: '2 Wheeler',
-            registration: 'DEFAULT',
-            createdAt: new Date().toISOString()
-          });
-          console.log("Default vehicle created:", docRef.id);
-        } catch (error) {
-          console.error("Error creating default vehicle:", error);
+        // Auto-create a default vehicle if none exists and they aren't onboarding
+        if (userProfile && !showOnboardingDialog) {
+          try {
+            const docRef = await addDoc(collection(db, 'vehicles'), {
+              userId: user.uid,
+              nickname: 'MY BIKE',
+              type: '2 Wheeler',
+              registration: 'DEFAULT',
+              createdAt: new Date().toISOString()
+            });
+            console.log("Default vehicle created:", docRef.id);
+          } catch (error) {
+            console.error("Error creating default vehicle:", error);
+          }
         }
       }
     }, (error) => {
@@ -456,7 +694,7 @@ function AppContent() {
     });
 
     return unsubscribe;
-  }, [user]);
+  }, [user, userProfile, showOnboardingDialog]);
 
   useEffect(() => {
     if (!user || !selectedVehicle) {
@@ -538,17 +776,17 @@ function AppContent() {
 
     const headers = [
       "Date", 
-      "Trip Kms", 
-      "Total Kms", 
+      `Trip ${getDistanceUnit()}`, 
+      `Total ${getDistanceUnit()}`, 
       "Riding Mode", 
       "Ride Type",
       "Fuel Type", 
-      "Liters Filled", 
-      "Actual Consumption (km/L)", 
-      "Calculated Consumption (km/L)", 
+      `${getVolumeUnitLabel()} Filled`, 
+      `Actual Consumption (${getConsumptionUnit()})`, 
+      `Calculated Consumption (${getConsumptionUnit()})`, 
       "Discrepancy", 
       "Total Cost", 
-      "Price Per Liter"
+      `Price Per ${getVolumeUnitCode()}`
     ];
 
     const rows = historyLogs.map(log => [
@@ -604,7 +842,7 @@ function AppContent() {
     }
   };
 
-  const handleUpdateVehicle = async () => {
+  const handleUpdateSettings = async () => {
     if (!selectedVehicle || !user) return;
     if (!editVehicleData.nickname || !editVehicleData.registration) {
       toast.error("Please fill all fields");
@@ -612,16 +850,27 @@ function AppContent() {
     }
 
     try {
+      // 1. Update vehicle data
       await updateDoc(doc(db, 'vehicles', selectedVehicle.id), {
-        nickname: editVehicleData.nickname,
-        registration: editVehicleData.registration,
+        nickname: editVehicleData.nickname.trim().toUpperCase(),
+        registration: editVehicleData.registration.trim().toUpperCase(),
         type: editVehicleData.type
       });
-      toast.success("Vehicle updated!");
+
+      // 2. Update user regional settings profile
+      await setDoc(doc(db, 'users', user.uid), {
+        distanceUnit: editDistanceUnit,
+        volumeUnit: editVolumeUnit,
+        currencyUnit: editCurrency,
+        consumptionUnit: editConsumptionUnit,
+        onboarded: true
+      }, { merge: true });
+
+      toast.success("Preferences & vehicle updated!");
       setShowEditVehicleDialog(false);
     } catch (error) {
-      console.error("Error updating vehicle:", error);
-      toast.error("Failed to update vehicle");
+      console.error("Error updating settings:", error);
+      toast.error("Failed to update preferences & vehicle");
     }
   };
 
@@ -782,11 +1031,13 @@ function AppContent() {
     const calcCons = parseFloat(formData.calculatedConsumption) || 0;
 
     if (isNaN(liters) || liters <= 0) {
-      toast.error("Please enter a valid amount of liters filled.");
+      const volLab = getVolumeUnitCode() === 'L' ? "liters" : "gallons";
+      toast.error(`Please enter a valid amount of ${volLab} filled.`);
       return;
     }
 
-    const actualConsumption = kms / liters;
+    const consumptionUnit = getConsumptionUnit();
+    const actualConsumption = kms <= 0 ? 0 : (consumptionUnit === 'L/100km' ? ((liters / kms) * 100) : (kms / liters));
     const discrepancy = isNaN(calcCons) ? 0 : calcCons - actualConsumption;
 
     if (!db) {
@@ -970,6 +1221,174 @@ function AppContent() {
     );
   }
 
+  if (user && showOnboardingDialog) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#E4E3E0] p-6 text-[#141414]">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="max-w-md w-full border border-[#141414] bg-[#E4E3E0] p-6 space-y-6 shadow-sm"
+        >
+          <div className="border-b border-[#141414] pb-4 text-center">
+            <h1 className="text-2xl font-mono uppercase tracking-widest font-bold">Account Config</h1>
+            <p className="text-xs font-serif italic text-[#141414]/70 mt-1">Please configure your units & first vehicle to begin tracking.</p>
+          </div>
+
+          <form onSubmit={handleCompleteOnboarding} className="space-y-6">
+            {/* Quick Country Preset */}
+            <div className="space-y-2">
+              <Label className="font-mono text-[10px] uppercase tracking-wider block text-left">Regional Preset</Label>
+              <Select value={obPreset} onValueChange={setObPreset}>
+                <SelectTrigger className="border-[#141414] rounded-none bg-transparent font-mono text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                  <SelectItem value="india">India (Metric, ₹, km/L)</SelectItem>
+                  <SelectItem value="us">United States (Imperial, $, MPG)</SelectItem>
+                  <SelectItem value="europe">Europe (Metric, €, L/100km)</SelectItem>
+                  <SelectItem value="uk">United Kingdom (Imperial, £, MPG UK)</SelectItem>
+                  <SelectItem value="custom">Custom Configuration</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Custom units panel shown if Custom or as a preview */}
+            <div className="p-3 bg-white/40 border border-[#141414]/10 space-y-4">
+              <h2 className="text-[10px] uppercase font-mono tracking-widest text-[#141414]/60 font-bold text-left">Preferences Review</h2>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1 text-left">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Distance Unit</Label>
+                  <Select 
+                    disabled={obPreset !== "custom"} 
+                    value={obDistanceUnit} 
+                    onValueChange={(val: any) => setObDistanceUnit(val)}
+                  >
+                    <SelectTrigger className="border-[#141414]/30 rounded-none bg-transparent h-8 font-mono text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="km">Kilometer (km)</SelectItem>
+                      <SelectItem value="mi">Mile (mi)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1 text-left">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Volume Unit</Label>
+                  <Select 
+                    disabled={obPreset !== "custom"} 
+                    value={obVolumeUnit} 
+                    onValueChange={(val: any) => setObVolumeUnit(val)}
+                  >
+                    <SelectTrigger className="border-[#141414]/30 rounded-none bg-transparent h-8 font-mono text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="L">Liters (L)</SelectItem>
+                      <SelectItem value="gal_us">Gallons (US)</SelectItem>
+                      <SelectItem value="gal_uk">Gallons (UK)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1 text-left">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Currency Symbol</Label>
+                  {obPreset === "custom" ? (
+                    <Input
+                      value={obCurrency}
+                      onChange={e => setObCurrency(e.target.value)}
+                      placeholder="e.g. $, ₹, €"
+                      className="border-[#141414]/30 rounded-none bg-transparent h-8 font-mono text-xs"
+                      maxLength={5}
+                      required
+                    />
+                  ) : (
+                    <div className="border border-[#141414]/20 rounded-none h-8 font-mono text-xs flex items-center px-3 bg-white/20 select-none">
+                      {obCurrency}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1 text-left">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Fuel Economy</Label>
+                  <Select 
+                    disabled={obPreset !== "custom"} 
+                    value={obConsumptionUnit} 
+                    onValueChange={(val: any) => setObConsumptionUnit(val)}
+                  >
+                    <SelectTrigger className="border-[#141414]/30 rounded-none bg-transparent h-8 font-mono text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="km/L">km/L</SelectItem>
+                      <SelectItem value="L/100km">L/100km</SelectItem>
+                      <SelectItem value="MPG (US)">MPG (US)</SelectItem>
+                      <SelectItem value="MPG (UK)">MPG (UK)</SelectItem>
+                      <SelectItem value="mi/L">mi/L</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            {/* Vehicle configuration details */}
+            <div className="space-y-3">
+              <h2 className="text-[10px] uppercase font-mono tracking-widest text-[#141414]/60 font-bold border-t border-[#141414]/10 pt-4 text-left">First Vehicle Details</h2>
+              
+              <div className="space-y-2 text-left">
+                <Label className="font-mono text-[10px] uppercase tracking-wider block">Nickname</Label>
+                <Input 
+                  value={obVehicleName}
+                  onChange={e => setObVehicleName(e.target.value)}
+                  placeholder="e.g. My GS, Daily Car, Highway Commuter"
+                  className="border-[#141414] rounded-none bg-transparent font-mono text-xs h-9"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2 text-left">
+                  <Label className="font-mono text-[10px] uppercase tracking-wider block">Vehicle Type</Label>
+                  <Select value={obVehicleType} onValueChange={(val: any) => setObVehicleType(val)}>
+                    <SelectTrigger className="border-[#141414] rounded-none bg-transparent font-mono text-xs h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="2 Wheeler">2 Wheeler</SelectItem>
+                      <SelectItem value="4 Wheeler">4 Wheeler</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2 text-left">
+                  <Label className="font-mono text-[10px] uppercase tracking-wider block">Registration (Optional)</Label>
+                  <Input 
+                    value={obVehicleReg}
+                    onChange={e => setObVehicleReg(e.target.value)}
+                    placeholder="e.g. KA-01-AB-1234"
+                    className="border-[#141414] rounded-none bg-transparent font-mono text-xs h-9"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <Button 
+              type="submit" 
+              disabled={obIsSubmitting}
+              className="w-full bg-[#141414] text-[#E4E3E0] rounded-none hover:bg-[#2a2a2a] transition duration-150 py-3 uppercase font-mono tracking-wider h-12 text-xs"
+            >
+              {obIsSubmitting ? <RefreshCw className="animate-spin w-4 h-4 mr-2 inline" /> : null}
+              Initialize Account & Vehicle
+            </Button>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
+
   if (!selectedVehicle) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#E4E3E0]">
@@ -1011,6 +1430,15 @@ function AppContent() {
                 <Button 
                   variant="ghost" 
                   size="icon" 
+                  title="Submit Feedback"
+                  onClick={() => setShowFeedbackDialog(true)}
+                  className="hover:bg-[#14141411]"
+                >
+                  <MessageSquarePlus className="w-5 h-5 text-indigo-600" />
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
                   onClick={() => {
                     if (selectedVehicle) {
                       setEditVehicleData({
@@ -1018,6 +1446,12 @@ function AppContent() {
                         registration: selectedVehicle.registration,
                         type: selectedVehicle.type
                       });
+                      if (userProfile) {
+                        setEditDistanceUnit(userProfile.distanceUnit);
+                        setEditVolumeUnit(userProfile.volumeUnit);
+                        setEditCurrency(userProfile.currencyUnit);
+                        setEditConsumptionUnit(userProfile.consumptionUnit);
+                      }
                       setShowEditVehicleDialog(true);
                     }
                   }}
@@ -1031,10 +1465,11 @@ function AppContent() {
             </div>
             
             <div className="pb-4">
-              <TabsList className="grid w-full grid-cols-3 bg-transparent border border-[#141414] p-1 rounded-none h-auto m-0">
+              <TabsList className="grid w-full grid-cols-4 bg-transparent border border-[#141414] p-1 rounded-none h-auto m-0">
                 <TabsTrigger value="dashboard" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Dashboard</TabsTrigger>
                 <TabsTrigger value="report" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Report</TabsTrigger>
                 <TabsTrigger value="history" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">History</TabsTrigger>
+                <TabsTrigger value="feedback" className="rounded-none data-active:bg-[#141414] data-active:text-[#E4E3E0] font-mono uppercase text-[10px] py-2">Feedback</TabsTrigger>
               </TabsList>
             </div>
           </div>
@@ -1067,11 +1502,11 @@ function AppContent() {
                 <CardContent className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-[10px] uppercase opacity-50 font-mono">Avg Consumption</p>
-                    <p className="text-2xl font-bold font-mono">{stats.avgConsumption} <span className="text-xs">km/L</span></p>
+                    <p className="text-2xl font-bold font-mono">{stats.avgConsumption} <span className="text-xs">{getConsumptionUnit()}</span></p>
                   </div>
                   <div>
                     <p className="text-[10px] uppercase opacity-50 font-mono">ECO Efficiency</p>
-                    <p className="text-2xl font-bold font-mono text-green-600">{stats.ecoEfficiency} <span className="text-xs">km/L</span></p>
+                    <p className="text-2xl font-bold font-mono text-green-600">{stats.ecoEfficiency} <span className="text-xs">{getConsumptionUnit()}</span></p>
                   </div>
                 </CardContent>
               </Card>
@@ -1100,12 +1535,10 @@ function AppContent() {
                   </div>
                 </div>
               </div>
-            </div>
-
-            <Card className="border-[#141414] bg-white/50 backdrop-blur-sm">
+                <Card className="border-[#141414] bg-white/50 backdrop-blur-sm">
               <CardHeader>
                 <CardTitle className="text-lg font-mono uppercase">Consumption Trends</CardTitle>
-                <CardDescription className="font-serif italic">Actual vs Calculated Fuel Economy (km/L)</CardDescription>
+                <CardDescription className="font-serif italic">Actual vs Calculated Fuel Economy ({getConsumptionUnit()})</CardDescription>
               </CardHeader>
               <CardContent className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
@@ -1129,7 +1562,7 @@ function AppContent() {
                <Card className="border-[#141414] bg-white/50">
                 <CardHeader>
                   <CardTitle className="text-lg font-mono uppercase">Efficiency by Mode</CardTitle>
-                  <CardDescription className="text-[10px] font-mono opacity-50">Average km/L per Riding Mode</CardDescription>
+                  <CardDescription className="text-[10px] font-mono opacity-50">Average {getConsumptionUnit()} per Riding Mode</CardDescription>
                 </CardHeader>
                 <CardContent className="h-[250px]">
                   <ResponsiveContainer width="100%" height="100%">
@@ -1138,13 +1571,13 @@ function AppContent() {
                       <XAxis dataKey="mode" stroke="#141414" fontSize={10} tickLine={false} axisLine={false} />
                       <YAxis stroke="#141414" fontSize={10} tickLine={false} axisLine={false} />
                       <Tooltip cursor={{fill: '#14141411'}} contentStyle={{ backgroundColor: '#141414', border: 'none', color: '#E4E3E0', fontFamily: 'monospace' }} />
-                      <Bar dataKey="actual" fill="#141414" radius={[4, 4, 0, 0]} name="Avg km/L" />
+                      <Bar dataKey="actual" fill="#141414" radius={[4, 4, 0, 0]} name={`Avg ${getConsumptionUnit()}`} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
 
-              <Card className="border-[#141414] bg-white/50">
+               <Card className="border-[#141414] bg-white/50">
                 <CardHeader>
                   <CardTitle className="text-lg font-mono uppercase">Fuel Grade Impact</CardTitle>
                   <CardDescription className="text-[10px] font-mono opacity-50">Standard vs Premium Efficiency</CardDescription>
@@ -1156,16 +1589,16 @@ function AppContent() {
                       <XAxis dataKey="fuel" stroke="#141414" fontSize={10} tickLine={false} axisLine={false} />
                       <YAxis stroke="#141414" fontSize={10} tickLine={false} axisLine={false} />
                       <Tooltip cursor={{fill: '#14141411'}} contentStyle={{ backgroundColor: '#141414', border: 'none', color: '#E4E3E0', fontFamily: 'monospace' }} />
-                      <Bar dataKey="actual" fill="#2563eb" radius={[4, 4, 0, 0]} name="Avg km/L" />
+                      <Bar dataKey="actual" fill="#2563eb" radius={[4, 4, 0, 0]} name={`Avg ${getConsumptionUnit()}`} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
 
-              <Card className="border-[#141414] bg-white/50">
+               <Card className="border-[#141414] bg-white/50">
                 <CardHeader>
                   <CardTitle className="text-lg font-mono uppercase">Ride Type Efficiency</CardTitle>
-                  <CardDescription className="text-[10px] font-mono opacity-50">City vs Highway vs Mixed</CardDescription>
+                  <CardDescription className="text-[10px] font-mono opacity-50">City vs Highway vs Mixed Efficiency</CardDescription>
                 </CardHeader>
                 <CardContent className="h-[250px]">
                   <ResponsiveContainer width="100%" height="100%">
@@ -1174,12 +1607,12 @@ function AppContent() {
                       <XAxis dataKey="type" stroke="#141414" fontSize={10} tickLine={false} axisLine={false} />
                       <YAxis stroke="#141414" fontSize={10} tickLine={false} axisLine={false} />
                       <Tooltip cursor={{fill: '#14141411'}} contentStyle={{ backgroundColor: '#141414', border: 'none', color: '#E4E3E0', fontFamily: 'monospace' }} />
-                      <Bar dataKey="actual" fill="#16a34a" radius={[4, 4, 0, 0]} name="Avg km/L" />
+                      <Bar dataKey="actual" fill="#16a34a" radius={[4, 4, 0, 0]} name={`Avg ${getConsumptionUnit()}`} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
-            </div>
+            </div>          </div>
 
             <Card className="border-[#141414] bg-[#141414] text-[#E4E3E0] rounded-none">
               <CardHeader>
@@ -1209,9 +1642,9 @@ function AppContent() {
                         <TableRow key={type} className="border-[#E4E3E011] hover:bg-[#E4E3E005]">
                           <TableCell className="font-mono text-[10px] uppercase font-bold">{type}</TableCell>
                           <TableCell className="font-mono text-[10px]">{avg.toFixed(2)}</TableCell>
-                          <TableCell className="font-mono text-[10px]">{totalKms.toFixed(0)} km</TableCell>
+                          <TableCell className="font-mono text-[10px]">{totalKms.toFixed(0)} {getDistanceUnit()}</TableCell>
                           <TableCell className="font-mono text-[10px] flex items-center gap-0.5">
-                            <IndianRupee className="w-2.5 h-2.5" />
+                            <span className="font-sans leading-none">{getCurrencySymbol()}</span>
                             {costPerKm.toFixed(2)}
                           </TableCell>
                         </TableRow>
@@ -1231,9 +1664,9 @@ function AppContent() {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent border-[#E4E3E022]">
                       <TableHead className="text-[#E4E3E0] font-mono text-[10px]">MODE</TableHead>
-                      <TableHead className="text-[#E4E3E0] font-mono text-[10px]">AVG KM/L</TableHead>
-                      <TableHead className="text-[#E4E3E0] font-mono text-[10px]">TOTAL KMS</TableHead>
-                      <TableHead className="text-[#E4E3E0] font-mono text-[10px]">FUEL COST / KM</TableHead>
+                      <TableHead className="text-[#E4E3E0] font-mono text-[10px]">AVG {getConsumptionUnit()}</TableHead>
+                      <TableHead className="text-[#E4E3E0] font-mono text-[10px]">TOTAL {getDistanceUnit().toUpperCase()}S</TableHead>
+                      <TableHead className="text-[#E4E3E0] font-mono text-[10px]">FUEL COST / {getDistanceUnit().toUpperCase()}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1250,9 +1683,9 @@ function AppContent() {
                         <TableRow key={mode} className="border-[#E4E3E011] hover:bg-[#E4E3E005]">
                           <TableCell className="font-mono text-[10px] uppercase font-bold">{mode}</TableCell>
                           <TableCell className="font-mono text-[10px]">{avg.toFixed(2)}</TableCell>
-                          <TableCell className="font-mono text-[10px]">{totalKms.toFixed(0)} km</TableCell>
+                          <TableCell className="font-mono text-[10px]">{totalKms.toFixed(0)} {getDistanceUnit()}</TableCell>
                           <TableCell className="font-mono text-[10px] flex items-center gap-0.5">
-                            <IndianRupee className="w-2.5 h-2.5" />
+                            <span className="font-sans leading-none">{getCurrencySymbol()}</span>
                             {costPerKm.toFixed(2)}
                           </TableCell>
                         </TableRow>
@@ -1386,9 +1819,19 @@ function AppContent() {
                     ? nonEcoLogs.reduce((acc, l) => acc + (l.actualConsumption || 0), 0) / nonEcoLogs.length 
                     : 0;
                   
-                  const improvement = nonEcoAvg > 0 ? ((ecoAvg - nonEcoAvg) / nonEcoAvg) * 100 : 0;
+                  const conU = getConsumptionUnit();
+                  const isL100 = conU === 'L/100km';
+                  const improvement = nonEcoAvg > 0 
+                    ? (isL100 
+                       ? ((nonEcoAvg - ecoAvg) / nonEcoAvg) * 100 
+                       : ((ecoAvg - nonEcoAvg) / nonEcoAvg) * 100)
+                    : 0;
                   const totalEcoKms = ecoLogs.reduce((acc, l) => acc + (l.kmsSinceLastRefill || 0), 0);
-                  const estimatedLitersSaved = nonEcoAvg > 0 ? (totalEcoKms / nonEcoAvg) - (totalEcoKms / ecoAvg) : 0;
+                  const estimatedLitersSaved = nonEcoAvg > 0 
+                    ? (isL100 
+                       ? (totalEcoKms * (nonEcoAvg - ecoAvg)) / 100 
+                       : (totalEcoKms / nonEcoAvg) - (totalEcoKms / ecoAvg))
+                    : 0;
                   const avgPrice = dashboardLogs.reduce((acc, l) => acc + (l.pricePerLiter || 0), 0) / (dashboardLogs.filter(l => (l.pricePerLiter || 0) > 0).length || 1);
                   const estimatedMoneySaved = estimatedLitersSaved * avgPrice;
 
@@ -1401,13 +1844,13 @@ function AppContent() {
                       </div>
                       <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-none">
                         <p className="text-[10px] uppercase opacity-50 font-mono">Fuel Saved</p>
-                        <p className="text-2xl font-bold font-mono text-green-700">{estimatedLitersSaved.toFixed(2)} L</p>
+                        <p className="text-2xl font-bold font-mono text-green-700">{estimatedLitersSaved.toFixed(2)} {getVolumeUnitCode()}</p>
                         <p className="text-[10px] font-serif italic mt-1">estimated total savings</p>
                       </div>
                       <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-none">
                         <p className="text-[10px] uppercase opacity-50 font-mono">Money Saved</p>
                         <p className="text-2xl font-bold font-mono text-green-700 flex items-center gap-1">
-                          <IndianRupee className="w-5 h-5" />
+                          <span className="font-sans">{getCurrencySymbol()}</span>
                           {estimatedMoneySaved.toFixed(2)}
                         </p>
                         <p className="text-[10px] font-serif italic mt-1">based on avg fuel price</p>
@@ -1429,14 +1872,14 @@ function AppContent() {
                     <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-none">
                       <p className="text-[10px] uppercase opacity-50 font-mono">Total Spent</p>
                       <p className="text-xl font-bold font-mono flex items-center gap-1">
-                        <IndianRupee className="w-4 h-4" />
+                        <span className="font-sans text-sm leading-none">{getCurrencySymbol()}</span>
                         {stats.totalCost}
                       </p>
                     </div>
                     <div className="p-3 bg-[#141414] text-[#E4E3E0] rounded-none">
-                      <p className="text-[10px] uppercase opacity-50 font-mono">Avg Cost / Km</p>
+                      <p className="text-[10px] uppercase opacity-50 font-mono">Avg Cost / {getDistanceUnit()}</p>
                       <p className="text-xl font-bold font-mono flex items-center gap-1">
-                        <IndianRupee className="w-4 h-4" />
+                        <span className="font-sans text-sm leading-none">{getCurrencySymbol()}</span>
                         {stats.avgCostPerKm}
                       </p>
                     </div>
@@ -1458,18 +1901,18 @@ function AppContent() {
                             <div className="p-2 bg-white/40 border border-[#14141411]">
                               <p className="text-[8px] uppercase opacity-50 font-mono">Spent</p>
                               <p className="text-xs font-bold font-mono flex items-center gap-0.5">
-                                <IndianRupee className="w-2.5 h-2.5" />
+                                <span className="font-sans text-[10px] leading-none">{getCurrencySymbol()}</span>
                                 {totalFuelCost.toFixed(2)}
                               </p>
                             </div>
                             <div className="p-2 bg-white/40 border border-[#14141411]">
                               <p className="text-[8px] uppercase opacity-50 font-mono">Distance</p>
-                              <p className="text-xs font-bold font-mono">{totalFuelKms.toFixed(0)} km</p>
+                              <p className="text-xs font-bold font-mono">{totalFuelKms.toFixed(0)} {getDistanceUnit()}</p>
                             </div>
                             <div className="p-2 bg-blue-600 text-white border border-[#14141411]">
-                              <p className="text-[8px] uppercase opacity-70 font-mono">Avg Cost/Km</p>
+                              <p className="text-[8px] uppercase opacity-70 font-mono">Avg Cost/{getDistanceUnit()}</p>
                               <p className="text-xs font-bold font-mono flex items-center gap-0.5">
-                                <IndianRupee className="w-2.5 h-2.5" />
+                                <span className="font-sans text-[10px] leading-none">{getCurrencySymbol()}</span>
                                 {avgCostPerKm}
                               </p>
                             </div>
@@ -1488,8 +1931,8 @@ function AppContent() {
                               <div key={mode} className="p-3 border border-[#14141411] bg-white/30 rounded-sm flex justify-between items-center">
                                 <span className="text-[10px] font-mono uppercase">{mode}</span>
                                 <span className="text-xs font-mono font-bold flex items-center gap-0.5">
-                                  <IndianRupee className="w-2.5 h-2.5" />
-                                  {modeAvgCost} / km
+                                  <span className="font-sans text-[10px] leading-none">{getCurrencySymbol()}</span>
+                                  {modeAvgCost} / {getDistanceUnit()}
                                 </span>
                               </div>
                             );
@@ -1539,7 +1982,7 @@ function AppContent() {
                             {disc > 0 ? '+' : ''}{disc.toFixed(2)}
                           </TableCell>
                           <TableCell className="font-mono text-xs font-bold flex items-center gap-0.5">
-                            <IndianRupee className="w-3 h-3" />
+                            <span className="font-sans text-[10px] leading-none">{getCurrencySymbol()}</span>
                             {costPerKm.toFixed(2)}
                           </TableCell>
                         </TableRow>
@@ -1798,6 +2241,161 @@ function AppContent() {
               </Table>
             </Card>
           </TabsContent>
+
+          <TabsContent value="feedback" className="space-y-6 m-0 border-none outline-none focus-visible:ring-0">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Left Column: Feedback submission card */}
+              <div className="md:col-span-1 space-y-4">
+                <Card className="border-[#141414] bg-[#E4E3E0]/40 backdrop-blur-sm rounded-none">
+                  <CardHeader>
+                    <CardTitle className="text-lg font-mono uppercase">Submit Feedback</CardTitle>
+                    <CardDescription className="font-serif italic text-xs">Help us make this fuel logger even better.</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleSubmitFeedback} className="space-y-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-mono tracking-widest block font-bold">Category</label>
+                        <select
+                          value={feedbackCategory}
+                          onChange={(e: any) => setFeedbackCategory(e.target.value)}
+                          className="w-full bg-[#E4E3E0] border border-[#141414] p-2 text-xs font-mono rounded-none"
+                        >
+                          <option value="Suggestion">Suggestion</option>
+                          <option value="Bug">Bug Report</option>
+                          <option value="Feature Request">Feature Request</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-mono tracking-widest block font-bold">Your Message</label>
+                        <textarea
+                          placeholder="What features would you like to see? Have you found any issues?"
+                          rows={6}
+                          value={feedbackText}
+                          onChange={(e) => setFeedbackText(e.target.value)}
+                          className="w-full bg-[#E4E3E0] border border-[#141414] p-2 text-xs font-mono rounded-none resize-none"
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        disabled={isFeedbackSubmitting}
+                        className="w-full cursor-pointer rounded-none bg-[#141414] text-[#E4E3E0] hover:bg-[#141414dd] font-mono text-xs uppercase py-2.5"
+                      >
+                        {isFeedbackSubmitting ? "Submitting..." : "Send Feedback"}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Right Columns: Feedback feed */}
+              <div className="md:col-span-2 space-y-4">
+                <Card className="border-[#141414] bg-[#E4E3E0]/40 backdrop-blur-sm rounded-none h-full flex flex-col">
+                  <CardHeader className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 pb-2">
+                    <div>
+                      <CardTitle className="text-lg font-mono uppercase">
+                        {userProfile?.role === 'admin' || user?.email === 'turbocharged9000@gmail.com' ? "All User Feedback" : "Your Submissions"}
+                      </CardTitle>
+                      <CardDescription className="font-serif italic text-xs">
+                        {userProfile?.role === 'admin' || user?.email === 'turbocharged9000@gmail.com' 
+                          ? `Consolidated database logs (${allFeedbacks.length} submissions)`
+                          : `Tracking your submitted suggestions and requests (${allFeedbacks.length})`
+                        }
+                      </CardDescription>
+                    </div>
+
+                    {/* Admin Action: Copy Feedbacks as JSON */}
+                    {(userProfile?.role === 'admin' || user?.email === 'turbocharged9000@gmail.com') && allFeedbacks.length > 0 && (
+                      <Button
+                        onClick={() => {
+                          const simpleFeedbacks = allFeedbacks.map(f => ({
+                            category: f.category,
+                            text: f.text,
+                            userEmail: f.userEmail || "anonymous",
+                            timestamp: f.timestamp
+                          }));
+                          navigator.clipboard.writeText(JSON.stringify(simpleFeedbacks, null, 2));
+                          toast.success("Feedback logs copied to clipboard as JSON!");
+                        }}
+                        size="sm"
+                        className="rounded-none bg-indigo-600 hover:bg-indigo-700 text-white font-mono text-[9px] uppercase px-3.5 py-1.5 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        Copy JSON for AI Developer
+                      </Button>
+                    )}
+                  </CardHeader>
+                  <CardContent className="flex-1 overflow-y-auto max-h-[600px] space-y-3 pr-2">
+                    {allFeedbacks.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-16 text-center space-y-2 border border-dashed border-[#14141422] p-4">
+                        <p className="font-serif italic text-sm text-[#14141499] mr-2">No feedback logs found yet.</p>
+                        <p className="text-[10px] font-mono opacity-50 max-w-sm">Use the form on the left to submit suggestions, bug reports, and features you wish were in the applet!</p>
+                      </div>
+                    ) : (
+                      allFeedbacks.map((item) => (
+                        <div key={item.id} className="p-3 bg-white/60 border border-[#14141411] space-y-2 hover:bg-white/80 transition-colors">
+                          <div className="flex justify-between items-start gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {/* Category Badge */}
+                              <span className={`px-2 py-0.5 text-[8px] uppercase tracking-wider font-mono border ${
+                                item.category === 'Bug' 
+                                  ? 'bg-red-500/10 text-red-600 border-red-500/20' 
+                                  : item.category === 'Feature Request'
+                                  ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
+                                  : item.category === 'Suggestion'
+                                  ? 'bg-purple-500/10 text-purple-600 border-purple-500/20'
+                                  : 'bg-slate-500/10 text-slate-700 border-slate-500/20'
+                              }`}>
+                                {item.category}
+                              </span>
+                              
+                              {/* User identifier for Admin */}
+                              {(userProfile?.role === 'admin' || user?.email === 'turbocharged9000@gmail.com') && (
+                                <span className="font-mono text-[9px] text-[#14141499] bg-[#1414140a] px-1.5 py-0.5" title={item.userId}>
+                                  {item.userEmail || "Anonymous"}
+                                </span>
+                              )}
+                            </div>
+                            
+                            <div className="flex items-center gap-2">
+                              {/* Formatted Date */}
+                              <span className="font-mono text-[9px] text-[#14141499]">
+                                {format(safeDate(item.timestamp), 'dd/MM/yyyy HH:mm')}
+                              </span>
+
+                              {/* Delete feedback option for Admin */}
+                              {(userProfile?.role === 'admin' || user?.email === 'turbocharged9000@gmail.com') && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (confirm("Are you sure you want to delete this feedback log?")) {
+                                      try {
+                                        await deleteDoc(doc(db, 'feedbacks', item.id));
+                                        toast.success("Feedback log deleted.");
+                                      } catch (error) {
+                                        console.error("Error deleting feedback:", error);
+                                        toast.error("Failed to delete log.");
+                                      }
+                                    }
+                                  }}
+                                  className="text-red-600 hover:text-red-700 p-0.5 cursor-pointer"
+                                  title="Delete Feedback Record"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <p className="text-xs font-serif leading-relaxed text-[#141414dd] whitespace-pre-wrap">{item.text}</p>
+                        </div>
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          </TabsContent>
         </main>
       </Tabs>
 
@@ -1846,21 +2444,21 @@ function AppContent() {
                 <div className={`p-2 border ${Math.abs(selectedLog.discrepancy || 0) > 0.5 ? 'bg-orange-500/10 border-orange-500/30' : 'bg-white/30 border-[#14141411]'}`}>
                   <p className="opacity-50 uppercase text-[9px]">Discrepancy</p>
                   <p className={`font-bold flex items-center gap-1 ${Math.abs(selectedLog.discrepancy || 0) > 0.5 ? 'text-orange-600' : ''}`}>
-                    {(selectedLog.discrepancy || 0) > 0 ? '+' : ''}{(selectedLog.discrepancy || 0).toFixed(2)} km/L
+                    {(selectedLog.discrepancy || 0) > 0 ? '+' : ''}{(selectedLog.discrepancy || 0).toFixed(2)} {getConsumptionUnit()}
                     {Math.abs(selectedLog.discrepancy || 0) > 0.5 && <AlertTriangle className="w-3 h-3" />}
                   </p>
                 </div>
                 <div className="p-2 bg-white/30 border border-[#14141411]">
                   <p className="opacity-50 uppercase text-[9px]">Total Cost</p>
                   <p className="font-bold flex items-center gap-0.5">
-                    <IndianRupee className="w-3 h-3" />
+                    <span className="font-sans text-[10px] leading-none">{getCurrencySymbol()}</span>
                     {(selectedLog.totalCost || 0).toFixed(2)}
                   </p>
                 </div>
                 <div className="p-2 bg-white/30 border border-[#14141411]">
-                  <p className="opacity-50 uppercase text-[9px]">Price/Liter</p>
+                  <p className="opacity-50 uppercase text-[9px]">Price/{getVolumeUnitCode()}</p>
                   <p className="font-bold flex items-center gap-0.5">
-                    <IndianRupee className="w-3 h-3" />
+                    <span className="font-sans text-[10px] leading-none">{getCurrencySymbol()}</span>
                     {(selectedLog.pricePerLiter || 0).toFixed(2)}
                   </p>
                 </div>
@@ -2067,8 +2665,8 @@ function AppContent() {
                 </DialogHeader>
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Trip Kms</Label>
+                    <div className="space-y-2 text-left">
+                      <Label className="font-mono text-[10px] uppercase">Trip {getDistanceUnit()}</Label>
                       <Input 
                         value={formData.kmsSinceLastRefill} 
                         onChange={e => setFormData({...formData, kmsSinceLastRefill: e.target.value})}
@@ -2077,8 +2675,8 @@ function AppContent() {
                         required
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Odometer</Label>
+                    <div className="space-y-2 text-left">
+                      <Label className="font-mono text-[10px] uppercase">Odometer ({getDistanceUnit()})</Label>
                       <Input 
                         value={formData.totalKms} 
                         onChange={e => setFormData({...formData, totalKms: e.target.value})}
@@ -2090,7 +2688,7 @@ function AppContent() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
+                    <div className="space-y-2 text-left">
                       <Label className="font-mono text-[10px] uppercase">Riding Mode</Label>
                       <Select value={formData.ridingMode} onValueChange={v => setFormData({...formData, ridingMode: v})}>
                         <SelectTrigger className="border-[#141414] rounded-none font-mono h-9">
@@ -2103,8 +2701,8 @@ function AppContent() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Bike Calc (km/L)</Label>
+                    <div className="space-y-2 text-left">
+                      <Label className="font-mono text-[10px] uppercase">Disp. Calc ({getConsumptionUnit()})</Label>
                       <Input 
                         value={formData.calculatedConsumption} 
                         onChange={e => setFormData({...formData, calculatedConsumption: e.target.value})}
@@ -2115,8 +2713,8 @@ function AppContent() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Liters Filled</Label>
+                    <div className="space-y-2 text-left">
+                      <Label className="font-mono text-[10px] uppercase">{getVolumeUnitLabel()} Filled</Label>
                       <Input 
                         value={formData.actualQuantityFilled} 
                         onChange={e => setFormData({...formData, actualQuantityFilled: e.target.value})}
@@ -2125,7 +2723,7 @@ function AppContent() {
                         required
                       />
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-2 text-left">
                       <Label className="font-mono text-[10px] uppercase">Fuel Grade</Label>
                       <Select value={formData.fuelType} onValueChange={(v: any) => setFormData({...formData, fuelType: v})}>
                         <SelectTrigger className="border-[#141414] rounded-none font-mono h-9">
@@ -2140,8 +2738,8 @@ function AppContent() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Total Cost (<IndianRupee className="w-2.5 h-2.5 inline" />)</Label>
+                    <div className="space-y-2 text-left">
+                      <Label className="font-mono text-[10px] uppercase">Total Cost ({getCurrencySymbol()})</Label>
                       <Input 
                         value={formData.totalCost} 
                         onChange={e => setFormData({...formData, totalCost: e.target.value})}
@@ -2150,8 +2748,8 @@ function AppContent() {
                         required
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label className="font-mono text-[10px] uppercase">Price / Liter (<IndianRupee className="w-2.5 h-2.5 inline" />)</Label>
+                    <div className="space-y-2 text-left">
+                      <Label className="font-mono text-[10px] uppercase">Price / {getVolumeUnitCode()} ({getCurrencySymbol()})</Label>
                       <Input 
                         value={formData.pricePerLiter} 
                         onChange={e => setFormData({...formData, pricePerLiter: e.target.value})}
@@ -2347,50 +2945,183 @@ function AppContent() {
       </AlertDialog>
 
       <Dialog open={showEditVehicleDialog} onOpenChange={setShowEditVehicleDialog}>
-        <DialogContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none max-w-sm">
+        <DialogContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none max-w-sm overflow-y-auto max-h-[90vh]">
           <DialogHeader>
-            <DialogTitle className="uppercase tracking-widest text-center border-b border-[#141414] pb-4">Edit Vehicle Details</DialogTitle>
+            <DialogTitle className="uppercase tracking-widest text-center border-b border-[#141414] pb-5 text-sm font-bold">Preferences & Vehicle Setup</DialogTitle>
           </DialogHeader>
-          <div className="space-y-6 py-6">
-            <div className="space-y-2">
-              <Label className="text-[10px] uppercase opacity-50">Nickname</Label>
-              <Input 
-                placeholder="e.g. My GS, Daily Car"
-                value={editVehicleData.nickname}
-                onChange={e => setEditVehicleData(prev => ({ ...prev, nickname: e.target.value }))}
-                className="border-[#141414] rounded-none bg-transparent"
-              />
+          <div className="space-y-6 py-4">
+            {/* Section 1: Vehicle Details */}
+            <div className="space-y-4">
+              <h3 className="text-[10px] uppercase font-bold tracking-widest opacity-60 border-b border-[#141414]/10 pb-1 text-left">Vehicle Details</h3>
+              <div className="space-y-2 text-left">
+                <Label className="text-[10px] uppercase opacity-50">Nickname</Label>
+                <Input 
+                  placeholder="e.g. My GS, Daily Car"
+                  value={editVehicleData.nickname}
+                  onChange={e => setEditVehicleData(prev => ({ ...prev, nickname: e.target.value }))}
+                  className="border-[#141414] rounded-none bg-transparent h-9"
+                  required
+                />
+              </div>
+              <div className="space-y-2 text-left">
+                <Label className="text-[10px] uppercase opacity-50">Vehicle Type</Label>
+                <Select 
+                  value={editVehicleData.type}
+                  onValueChange={(val: any) => setEditVehicleData(prev => ({ ...prev, type: val }))}
+                >
+                  <SelectTrigger className="border-[#141414] rounded-none bg-transparent h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                    <SelectItem value="2 Wheeler">2 Wheeler</SelectItem>
+                    <SelectItem value="4 Wheeler">4 Wheeler</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 text-left">
+                <Label className="text-[10px] uppercase opacity-50">Registration Number</Label>
+                <Input 
+                  placeholder="e.g. KA-01-AB-1234"
+                  value={editVehicleData.registration}
+                  onChange={e => setEditVehicleData(prev => ({ ...prev, registration: e.target.value }))}
+                  className="border-[#141414] rounded-none bg-transparent h-9"
+                />
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label className="text-[10px] uppercase opacity-50">Vehicle Type</Label>
-              <Select 
-                value={editVehicleData.type}
-                onValueChange={(val: any) => setEditVehicleData(prev => ({ ...prev, type: val }))}
-              >
-                <SelectTrigger className="border-[#141414] rounded-none bg-transparent">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
-                  <SelectItem value="2 Wheeler">2 Wheeler</SelectItem>
-                  <SelectItem value="4 Wheeler">4 Wheeler</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-[10px] uppercase opacity-50">Registration Number</Label>
-              <Input 
-                placeholder="e.g. KA-01-AB-1234"
-                value={editVehicleData.registration}
-                onChange={e => setEditVehicleData(prev => ({ ...prev, registration: e.target.value }))}
-                className="border-[#141414] rounded-none bg-transparent"
-              />
+
+            {/* Section 2: Regional Preferences */}
+            <div className="space-y-4 border-t border-[#141414]/10 pt-4">
+              <h3 className="text-[10px] uppercase font-bold tracking-widest opacity-60 border-b border-[#141414]/10 pb-1 text-left">Regional Settings</h3>
+              
+              <div className="grid grid-cols-2 gap-3 text-left">
+                <div className="space-y-1">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Distance Unit</Label>
+                  <Select 
+                    value={editDistanceUnit} 
+                    onValueChange={(val: any) => setEditDistanceUnit(val)}
+                  >
+                    <SelectTrigger className="border-[#141414] rounded-none bg-transparent h-8 font-mono text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="km">Kilometer (km)</SelectItem>
+                      <SelectItem value="mi">Mile (mi)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1 text-left">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Volume Unit</Label>
+                  <Select 
+                    value={editVolumeUnit} 
+                    onValueChange={(val: any) => setEditVolumeUnit(val)}
+                  >
+                    <SelectTrigger className="border-[#141414] rounded-none bg-transparent h-8 font-mono text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="L">Liters (L)</SelectItem>
+                      <SelectItem value="gal_us">Gallons (US)</SelectItem>
+                      <SelectItem value="gal_uk">Gallons (UK)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-left">
+                <div className="space-y-1">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Currency Symbol</Label>
+                  <Input
+                    value={editCurrency}
+                    onChange={e => setEditCurrency(e.target.value)}
+                    placeholder="e.g. $, ₹, €"
+                    className="border-[#141414] rounded-none bg-transparent h-8 font-mono text-xs"
+                    maxLength={5}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-[9px] font-mono uppercase opacity-50 block">Fuel Economy</Label>
+                  <Select 
+                    value={editConsumptionUnit} 
+                    onValueChange={(val: any) => setEditConsumptionUnit(val)}
+                  >
+                    <SelectTrigger className="border-[#141414] rounded-none bg-transparent h-8 font-mono text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#E4E3E0] border-[#141414] font-mono rounded-none">
+                      <SelectItem value="km/L">km/L</SelectItem>
+                      <SelectItem value="L/100km">L/100km</SelectItem>
+                      <SelectItem value="MPG (US)">MPG (US)</SelectItem>
+                      <SelectItem value="MPG (UK)">MPG (UK)</SelectItem>
+                      <SelectItem value="mi/L">mi/L</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={handleUpdateVehicle} className="w-full bg-[#141414] text-[#E4E3E0] rounded-none hover:bg-[#2a2a2a] h-12">
-              UPDATE_VEHICLE_DATA
+            <Button onClick={handleUpdateSettings} className="w-full bg-[#141414] text-[#E4E3E0] rounded-none hover:bg-[#2a2a2a] h-12 uppercase tracking-wide text-xs">
+              Save Preferences & Settings
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Feedback Submission Dialog (Overlay Mode) */}
+      <Dialog open={showFeedbackDialog} onOpenChange={setShowFeedbackDialog}>
+        <DialogContent className="sm:max-w-[450px] bg-[#E4E3E0] border-[#141414] rounded-none p-6">
+          <DialogHeader>
+            <DialogTitle className="font-mono uppercase tracking-widest border-b border-[#14141422] pb-2 text-left">Submit Feedback</DialogTitle>
+            <DialogDescription className="font-serif italic text-xs mt-1 text-left">We read and act on all suggestions!</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSubmitFeedback} className="space-y-4 mt-4 text-left">
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase font-mono tracking-widest block font-bold text-left">Feedback Category</label>
+              <select
+                value={feedbackCategory}
+                onChange={(e: any) => setFeedbackCategory(e.target.value)}
+                className="w-full bg-[#E4E3E0] border border-[#141414] p-2 text-xs font-mono rounded-none"
+              >
+                <option value="Suggestion">Suggestion</option>
+                <option value="Bug">Bug Report</option>
+                <option value="Feature Request">Feature Request</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            
+            <div className="space-y-1.5 text-left">
+              <label className="text-[10px] uppercase font-mono tracking-widest block font-bold text-left">Your Feedback, Request, or Bug Details</label>
+              <textarea
+                placeholder="Write your feedback here..."
+                rows={5}
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+                className="w-full bg-white/50 border border-[#141414] p-2 text-xs font-mono rounded-none resize-none"
+                required
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[#14141411]">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowFeedbackDialog(false)}
+                className="rounded-none border-[#141414] font-mono text-xs uppercase cursor-pointer"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={isFeedbackSubmitting}
+                className="rounded-none bg-[#141414] text-[#E4E3E0] hover:bg-[#141414dd] font-mono text-xs uppercase cursor-pointer"
+              >
+                {isFeedbackSubmitting ? "Sending..." : "Submit Feedback"}
+              </Button>
+            </div>
+          </form>
         </DialogContent>
       </Dialog>
 

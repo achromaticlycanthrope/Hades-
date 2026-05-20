@@ -67,6 +67,16 @@ service cloud.firestore {
              (!('receipts' in data) || data.receipts is list);
     }
 
+    function isValidFeedback(data) {
+      return data.category in ['Bug', 'Feature Request', 'Suggestion', 'Other'] &&
+             data.text is string &&
+             data.text.size() > 0 &&
+             data.text.size() <= 2000 &&
+             data.timestamp is string &&
+             (!('userId' in data) || data.userId is string) &&
+             (!('userEmail' in data) || data.userEmail is string);
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId) && request.resource.data.role == 'user';
@@ -85,6 +95,13 @@ service cloud.firestore {
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid && isValidFuelLog(request.resource.data);
       allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && isValidFuelLog(request.resource.data);
       allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /feedbacks/{feedbackId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || !('userId' in request.resource.data)) && isValidFeedback(request.resource.data);
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
   }
 }

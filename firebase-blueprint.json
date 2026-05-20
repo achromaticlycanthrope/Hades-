@@ -37,6 +37,19 @@
         "receipts": { "type": "array", "items": { "type": "string" }, "description": "List of URLs for fuel receipts stored in Firebase Storage." }
       },
       "required": ["userId", "vehicleId", "timestamp", "kmsSinceLastRefill", "totalKms", "actualQuantityFilled", "fuelType", "totalCost", "pricePerLiter"]
+    },
+    "feedback": {
+      "title": "Feedback",
+      "description": "User feedback and feature requests for app improvement.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who submitted the feedback (if authenticated)." },
+        "userEmail": { "type": "string", "description": "The email of the user (if authenticated)." },
+        "category": { "type": "string", "enum": ["Bug", "Feature Request", "Suggestion", "Other"], "description": "Type of feedback." },
+        "text": { "type": "string", "description": "The detailed description of the feedback." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the feedback was submitted." }
+      },
+      "required": ["category", "text", "timestamp"]
     }
   },
   "firestore": {
@@ -47,6 +60,10 @@
     "/fuelLogs/{logId}": {
       "schema": "fuelLog",
       "description": "Collection of fuel fill-up logs."
+    },
+    "/feedbacks/{feedbackId}": {
+      "schema": "feedback",
+      "description": "Collection of user feedback logs."
     }
   }
 }
